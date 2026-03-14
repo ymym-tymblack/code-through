@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config_file="$repo_root/.devcontainer/devcontainer.json"
+workspace_dir="/workspaces/$(basename "$repo_root")"
 shell_name="${1:-bash}"
 if [[ $# -gt 0 ]]; then
   shift
@@ -17,4 +18,8 @@ if [[ -z "$cid" ]]; then
   exit 1
 fi
 
-exec devcontainer exec --container-id "$cid" "$shell_name" "$@"
+exec devcontainer exec \
+  --workspace-folder "$repo_root" \
+  --container-id "$cid" \
+  bash -lc 'cd "$1" && exec "$2" "${@:3}"' \
+  bash "$workspace_dir" "$shell_name" "$@"
