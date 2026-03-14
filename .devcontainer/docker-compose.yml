@@ -9,6 +9,7 @@ services:
     environment:
       TZ: Asia/Tokyo
     volumes:
+      - ..:/workspaces/hermes-agent:cached
       - uv-cache:/root/.cache/uv
       - zsh-history:/root/.local/share/zsh
     command: sleep infinity

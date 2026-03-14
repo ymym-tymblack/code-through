@@ -4,7 +4,6 @@
     "docker-compose.yml"
   ],
   "service": "dev",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "overrideCommand": false,
   "remoteUser": "root",
@@ -20,6 +19,6 @@
       ]
     }
   },
-  "postCreateCommand": "bash -lc 'if [ -f pyproject.toml ]; then uv sync --all-extras || uv sync; fi && if [ -f package.json ]; then npm install; fi'",
+  "postCreateCommand": "bash -lc 'if [ -f pyproject.toml ]; then uv sync --extra dev --extra cli --extra cron --extra pty --extra mcp --extra acp --extra honcho --extra homeassistant || uv sync; fi && if [ -f package.json ]; then npm install; fi'",
   "postStartCommand": "bash -lc 'git config --global --add safe.directory ${containerWorkspaceFolder}'"
 }
