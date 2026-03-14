@@ -19,6 +19,6 @@
       ]
     }
   },
-  "postCreateCommand": "bash -lc 'if [ -f pyproject.toml ]; then uv sync --extra dev --extra cli --extra cron --extra pty --extra mcp --extra acp --extra honcho --extra homeassistant || uv sync; fi && if [ -f package.json ]; then npm install; fi'",
+  "postCreateCommand": "bash -lc 'if [ -f pyproject.toml ]; then uv venv .venv --python /usr/bin/python3 && uv pip install --python .venv/bin/python -e \".[dev,cli,cron,pty,mcp,acp,honcho,homeassistant]\"; fi && if [ -f package.json ]; then npm install; fi'",
   "postStartCommand": "bash -lc 'git config --global --add safe.directory ${containerWorkspaceFolder}'"
 }
