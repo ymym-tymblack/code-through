@@ -1,0 +1,18 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    image: hermes-agent-devcontainer
+    init: true
+    tty: true
+    environment:
+      TZ: Asia/Tokyo
+    volumes:
+      - uv-cache:/root/.cache/uv
+      - zsh-history:/root/.local/share/zsh
+    command: sleep infinity
+
+volumes:
+  uv-cache:
+  zsh-history:
