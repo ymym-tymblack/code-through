@@ -144,3 +144,29 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/no-desc")
         assert len(completions) == 1
         assert "Skill command" in completions[0].display_meta_text
+
+    # -- builtin option completion ----------------------------------------
+
+    def test_command_option_completion_suggests_review_actions(self):
+        completions = _completions(SlashCommandCompleter(), "/review ")
+
+        texts = {item.text for item in completions}
+        assert {"on", "off", "status", "last", "apply"}.issubset(texts)
+        assert any(item.display_meta_text == "Show review watcher status" for item in completions)
+
+    def test_command_option_completion_filters_by_prefix(self):
+        completions = _completions(SlashCommandCompleter(), "/reasoning sh")
+
+        assert [item.text for item in completions] == ["show"]
+        assert completions[0].display_meta_text == "Show model reasoning in output"
+
+    def test_exact_option_match_adds_trailing_space(self):
+        completions = _completions(SlashCommandCompleter(), "/voice tts")
+
+        assert [item.text for item in completions] == ["tts "]
+
+    def test_command_without_registered_options_does_not_suggest_arguments(self):
+        assert _completions(SlashCommandCompleter(), "/help ") == []
+
+    def test_only_first_argument_gets_option_completion(self):
+        assert _completions(SlashCommandCompleter(), "/review apply now") == []

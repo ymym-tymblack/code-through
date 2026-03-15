@@ -67,6 +67,42 @@ for category_commands in COMMANDS_BY_CATEGORY.values():
     COMMANDS.update(category_commands)
 
 
+COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "/cron": (
+        ("list", "List scheduled jobs"),
+        ("add", "Create a scheduled job"),
+        ("remove", "Remove a scheduled job by ID"),
+        ("rm", "Alias for remove"),
+        ("delete", "Alias for remove"),
+    ),
+    "/review": (
+        ("on", "Enable automatic diff review watcher"),
+        ("off", "Disable automatic diff review watcher"),
+        ("status", "Show review watcher status"),
+        ("last", "Show the latest diff review"),
+        ("apply", "Queue an implementation prompt from the latest diff review"),
+    ),
+    "/reasoning": (
+        ("none", "Disable reasoning effort"),
+        ("low", "Set reasoning effort to low"),
+        ("minimal", "Alias for low reasoning effort"),
+        ("medium", "Set reasoning effort to medium"),
+        ("high", "Set reasoning effort to high"),
+        ("xhigh", "Set reasoning effort to xhigh"),
+        ("show", "Show model reasoning in output"),
+        ("on", "Alias for showing model reasoning"),
+        ("hide", "Hide model reasoning in output"),
+        ("off", "Alias for hiding model reasoning"),
+    ),
+    "/voice": (
+        ("on", "Enable voice mode"),
+        ("off", "Disable voice mode"),
+        ("tts", "Toggle text-to-speech playback"),
+        ("status", "Show voice mode status"),
+    ),
+}
+
+
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands and optional skill commands."""
 
@@ -95,9 +131,39 @@ class SlashCommandCompleter(Completer):
         """
         return f"{cmd_name} " if cmd_name == word else cmd_name
 
+    @staticmethod
+    def _parse_option_context(text: str) -> tuple[str, str] | None:
+        """Return (command, option_prefix) when completing the first option.
+
+        Only the first argument is completed for now. Free-form arguments after
+        the first option are intentionally left untouched.
+        """
+        body = text[1:]
+        if not body or body.lstrip() != body or " " not in body:
+            return None
+
+        command_name, remainder = body.split(" ", maxsplit=1)
+        option_prefix = remainder.lstrip()
+        if " " in option_prefix:
+            return None
+        return f"/{command_name}", option_prefix
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
+            return
+
+        option_context = self._parse_option_context(text)
+        if option_context is not None:
+            command, option_prefix = option_context
+            for option, desc in COMMAND_OPTIONS.get(command, ()):
+                if option.startswith(option_prefix):
+                    yield Completion(
+                        self._completion_text(option, option_prefix),
+                        start_position=-len(option_prefix),
+                        display=option,
+                        display_meta=desc,
+                    )
             return
 
         word = text[1:]
