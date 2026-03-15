@@ -1,9 +1,9 @@
-"""Workspace diff watcher for Codex companion workflows.
+"""Workspace review/store helpers.
 
 MVP scope:
 - Poll a workspace for text-file changes
 - Batch nearby saves into a single change-set
-- Persist raw diff events under ~/.hermes/codex_companion/
+- Persist diff events and command outputs under ~/.hermes/store/
 - Optionally send each change-set to Hermes for natural-language analysis
 """
 
@@ -73,6 +73,7 @@ DEFAULT_MAX_DIFF_CHARS = 12_000
 DEFAULT_MAX_RELATED_FILES = 6
 DEFAULT_MAX_RELATED_CHARS = 16_000
 DEFAULT_SYMBOL_MATCHES = 5
+STORE_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,15 @@ class PendingChange:
         self.change_type = change_type
         self.new_content = new_content
         self.updated_at = updated_at
+
+
+def _text_lines(text: str) -> list[str]:
+    return text.splitlines()
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "output"
 
 
 def _is_likely_binary(data: bytes) -> bool:
@@ -371,34 +381,128 @@ def detect_changes(
     return changes
 
 
-class CompanionStore:
+class HermesStore:
     def __init__(self, root: Optional[Path] = None):
         ensure_hermes_home()
-        self.root = root or (get_hermes_home() / "codex_companion")
+        default_root = get_hermes_home() / "store"
+        legacy_root = get_hermes_home() / "codex_companion"
+        if root is not None:
+            self.root = root
+        elif default_root.exists() or not legacy_root.exists():
+            self.root = default_root
+        else:
+            self.root = legacy_root
         self.events_dir = self.root / "events"
-        self.analysis_dir = self.root / "analysis"
+        self.outputs_dir = self.root / "outputs"
         self.events_dir.mkdir(parents=True, exist_ok=True)
-        self.analysis_dir.mkdir(parents=True, exist_ok=True)
+        self.outputs_dir.mkdir(parents=True, exist_ok=True)
 
     def save_event(self, payload: dict) -> Path:
         event_id = payload["event_id"]
         path = self.events_dir / f"{event_id}.json"
+        event_payload = dict(payload)
+        event_payload["store_version"] = STORE_SCHEMA_VERSION
+        event_payload["kind"] = "diff_event"
+        event_payload["summary"] = {
+            "change_count": len(payload.get("changes", [])),
+            "paths": [str(change.get("path", "")) for change in payload.get("changes", [])],
+        }
+        for change in event_payload.get("changes", []):
+            diff_text = str(change.get("diff_text") or "")
+            change["diff_lines"] = _text_lines(diff_text)
+        path.write_text(json.dumps(event_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def save_command_output(
+        self,
+        *,
+        command: str,
+        title: str,
+        body: str = "",
+        subtitle: str = "",
+        workspace_root: str = "",
+        session_id: str = "",
+        status: str = "ok",
+        metadata: Optional[dict[str, Any]] = None,
+        output_id: Optional[str] = None,
+    ) -> Path:
+        created_at = time.time()
+        output_id = output_id or uuid.uuid4().hex
+        payload = {
+            "store_version": STORE_SCHEMA_VERSION,
+            "kind": "command_output",
+            "output_id": output_id,
+            "command": command,
+            "title": title,
+            "subtitle": subtitle,
+            "status": status,
+            "workspace_root": workspace_root,
+            "session_id": session_id,
+            "created_at": created_at,
+            "content": {
+                "text": body,
+                "lines": _text_lines(body),
+            },
+            "metadata": metadata or {},
+        }
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime(created_at))
+        filename = f"{timestamp}_{_slugify(command)}_{_slugify(title)}_{output_id[:8]}.json"
+        path = self.outputs_dir / filename
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
     def save_analysis(self, event_id: str, payload: dict) -> Path:
-        path = self.analysis_dir / f"{event_id}.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return path
+        body = str(payload.get("analysis") or "")
+        metadata = {k: v for k, v in payload.items() if k != "analysis"}
+        return self.save_command_output(
+            command="review",
+            title="Diff Review",
+            body=body,
+            status="ok" if body else "error",
+            metadata={"event_id": event_id, **metadata},
+            output_id=event_id,
+        )
 
-    def load_latest_analysis(self) -> Optional[dict]:
-        candidates = sorted(self.analysis_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    def load_latest_output(
+        self,
+        *,
+        command: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Optional[dict]:
+        candidates = sorted(self.outputs_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
         for candidate in candidates:
             try:
-                return json.loads(candidate.read_text(encoding="utf-8"))
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
             except Exception:
                 continue
+            if payload.get("kind") != "command_output":
+                continue
+            if command and payload.get("command") != command:
+                continue
+            if title and payload.get("title") != title:
+                continue
+            return payload
         return None
+
+    def load_latest_analysis(self) -> Optional[dict]:
+        payload = self.load_latest_output(command="review", title="Diff Review")
+        if not payload:
+            return None
+        body = payload.get("content", {}).get("text", "")
+        result = {
+            "analysis": body,
+            "event_id": payload.get("metadata", {}).get("event_id", ""),
+            "timestamp": payload.get("created_at"),
+            "status": payload.get("status", "ok"),
+        }
+        metadata = payload.get("metadata", {})
+        if "error" in metadata:
+            result["error"] = metadata["error"]
+        if "provider" in metadata:
+            result["provider"] = metadata["provider"]
+        if "model" in metadata:
+            result["model"] = metadata["model"]
+        return result
 
     def load_latest_event(self) -> Optional[dict]:
         candidates = sorted(self.events_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
@@ -408,6 +512,9 @@ class CompanionStore:
             except Exception:
                 continue
         return None
+
+
+CompanionStore = HermesStore
 
 
 def _event_payload(
@@ -676,7 +783,7 @@ def analyze_prompt(
         enabled_toolsets=["file", "session_search"],
         quiet_mode=True,
         platform="cli",
-        session_id=session_id or f"codex-companion-{uuid.uuid4().hex}",
+        session_id=session_id or f"store-{uuid.uuid4().hex}",
         skip_memory=True,
     )
     result = agent.run_conversation(prompt)
@@ -707,7 +814,7 @@ def analyze_change_set(
     result = analyze_prompt(
         prompt,
         model=model,
-        session_id=f"codex-companion-{event['event_id']}",
+        session_id=f"store-{event['event_id']}",
         runtime=runtime,
     )
     return {
@@ -743,7 +850,7 @@ def explain_file(
     result = analyze_prompt(
         prompt,
         model=model,
-        session_id=f"codex-companion-explain-{uuid.uuid4().hex}",
+        session_id=f"store-explain-{uuid.uuid4().hex}",
         runtime=runtime,
     )
     result.update({"target_path": target_path, "symbol": symbol or "", "related_files": related})
@@ -776,7 +883,7 @@ class CodexCompanionWatcher:
         self.on_analysis = on_analysis
         self.stop_event = stop_event or threading.Event()
         self.session_id = uuid.uuid4().hex
-        self.store = CompanionStore()
+        self.store = HermesStore()
         self._previous_snapshot = collect_workspace_snapshot(
             self.workspace_root,
             max_file_bytes=self.max_file_bytes,
@@ -834,7 +941,7 @@ class CodexCompanionWatcher:
 
     def _process_event(self, event: dict) -> None:
         event_path = self.store.save_event(event)
-        print(f"[codex-watch] change-set saved: {event_path}")
+        print(f"[store] event saved: {event_path}")
         if self.on_event is not None:
             self.on_event(event, event_path)
         if not self.analyze:
@@ -847,14 +954,39 @@ class CodexCompanionWatcher:
                 "timestamp": time.time(),
                 "error": format_runtime_provider_error(exc),
             }
-            analysis_path = self.store.save_analysis(event["event_id"], error_payload)
-            print(f"[codex-watch] analysis failed: {analysis_path}")
-            print(error_payload["error"])
+            analysis_path = self.store.save_command_output(
+                command="review",
+                title="Diff Review",
+                subtitle=", ".join(change["path"] for change in event.get("changes", [])[:3]),
+                workspace_root=str(self.workspace_root),
+                session_id=event.get("session_id", ""),
+                status="error",
+                metadata={"event_id": event["event_id"], **error_payload},
+            )
+            print(f"[store] output saved: {analysis_path}")
             if self.on_analysis is not None:
                 self.on_analysis(error_payload, analysis_path)
             return
-        analysis_path = self.store.save_analysis(event["event_id"], analysis)
-        print(f"[codex-watch] analysis saved: {analysis_path}")
+        changed = ", ".join(change["path"] for change in event.get("changes", [])[:3])
+        if len(event.get("changes", [])) > 3:
+            changed += ", ..."
+        analysis_path = self.store.save_command_output(
+            command="review",
+            title="Diff Review",
+            subtitle=changed,
+            body=analysis.get("analysis", ""),
+            workspace_root=str(self.workspace_root),
+            session_id=event.get("session_id", ""),
+            status="ok",
+            metadata={
+                "event_id": event["event_id"],
+                "provider": analysis.get("provider"),
+                "model": analysis.get("model"),
+                "related_files": analysis.get("related_files", []),
+            },
+            output_id=event["event_id"],
+        )
+        print(f"[store] output saved: {analysis_path}")
         if self.on_analysis is not None:
             self.on_analysis(analysis, analysis_path)
 
@@ -862,7 +994,7 @@ class CodexCompanionWatcher:
         self.stop_event.set()
 
     def run(self) -> int:
-        print(f"[codex-watch] watching {self.workspace_root}")
+        print(f"[store] watching {self.workspace_root}")
         try:
             while not self.stop_event.is_set():
                 current_snapshot = collect_workspace_snapshot(
@@ -885,17 +1017,17 @@ class CodexCompanionWatcher:
             event = self._flush_ready(force=True)
             if event is not None:
                 self._process_event(event)
-            print("\n[codex-watch] stopped")
+            print("\n[store] stopped")
             return 0
 
 
 def run_codex_watch(args: argparse.Namespace) -> int:
     workspace_root = Path(args.path or ".").expanduser().resolve()
     if not workspace_root.exists():
-        print(f"[codex-watch] workspace not found: {workspace_root}")
+        print(f"[store] workspace not found: {workspace_root}")
         return 1
     if not workspace_root.is_dir():
-        print(f"[codex-watch] workspace is not a directory: {workspace_root}")
+        print(f"[store] workspace is not a directory: {workspace_root}")
         return 1
     watcher = CodexCompanionWatcher(
         workspace_root,
@@ -910,9 +1042,10 @@ def run_codex_watch(args: argparse.Namespace) -> int:
 
 def build_arg_parser(subparsers) -> None:
     parser = subparsers.add_parser(
-        "codex-watch",
-        help="Watch the workspace for text-file diffs and analyze them with Hermes",
-        description="Poll the current workspace, batch nearby file saves into a change-set, and optionally ask Hermes to explain risks and improvements.",
+        "store",
+        aliases=["codex-watch"],
+        help="Watch workspace diffs and store readable review outputs",
+        description="Poll the current workspace, batch nearby file saves into a change-set, and optionally ask Hermes to analyze them while saving readable JSON records under ~/.hermes/store.",
     )
     parser.add_argument(
         "path",
@@ -954,6 +1087,7 @@ def build_arg_parser(subparsers) -> None:
 __all__ = [
     "CompanionStore",
     "CodexCompanionWatcher",
+    "HermesStore",
     "PendingChange",
     "analyze_prompt",
     "build_arg_parser",

@@ -5,7 +5,8 @@ Hermes CLI - Main entry point.
 Usage:
     hermes                     # Interactive chat (default)
     hermes chat                # Interactive chat
-    hermes codex-watch         # Watch workspace diffs and analyze change-sets
+    hermes store               # Watch workspace diffs and store review outputs
+    hermes codex-watch         # Backward-compatible alias for `hermes store`
     hermes gateway             # Run gateway in foreground
     hermes gateway start       # Start gateway as service
     hermes gateway stop        # Stop gateway service
@@ -3068,7 +3069,7 @@ For more help on a command:
     insights_parser.set_defaults(func=cmd_insights)
 
     # =========================================================================
-    # codex-watch command
+    # store command (with codex-watch alias)
     # =========================================================================
     from hermes_cli.codex_companion import build_arg_parser as _build_codex_watch_parser
 

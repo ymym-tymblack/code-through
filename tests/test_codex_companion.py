@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from hermes_cli.codex_companion import (
     CodexCompanionWatcher,
-    CompanionStore,
+    HermesStore,
     PendingChange,
     build_diff_text,
     collect_related_context,
@@ -57,15 +57,20 @@ def test_build_diff_text_uses_dev_null_for_created_and_deleted():
 
 
 def test_companion_store_persists_event_and_analysis(tmp_path):
-    store = CompanionStore(root=tmp_path / "store")
+    store = HermesStore(root=tmp_path / "store")
     event = {"event_id": "evt1", "changes": []}
     analysis = {"event_id": "evt1", "analysis": "ok"}
 
     event_path = store.save_event(event)
     analysis_path = store.save_analysis("evt1", analysis)
 
-    assert json.loads(event_path.read_text(encoding="utf-8"))["event_id"] == "evt1"
-    assert json.loads(analysis_path.read_text(encoding="utf-8"))["analysis"] == "ok"
+    saved_event = json.loads(event_path.read_text(encoding="utf-8"))
+    saved_output = json.loads(analysis_path.read_text(encoding="utf-8"))
+    assert saved_event["event_id"] == "evt1"
+    assert saved_event["kind"] == "diff_event"
+    assert saved_output["command"] == "review"
+    assert saved_output["content"]["text"] == "ok"
+    assert saved_output["content"]["lines"] == ["ok"]
 
 
 def test_run_codex_watch_rejects_missing_workspace(tmp_path):
@@ -188,7 +193,7 @@ def test_collect_related_context_follows_python_imports(tmp_path):
 
 
 def test_companion_store_loads_latest_saved_artifacts(tmp_path):
-    store = CompanionStore(root=tmp_path / "store")
+    store = HermesStore(root=tmp_path / "store")
     event = {"event_id": "evt2", "changes": [{"path": "demo.py"}]}
     analysis = {"event_id": "evt2", "analysis": "ok"}
 
@@ -201,12 +206,32 @@ def test_companion_store_loads_latest_saved_artifacts(tmp_path):
 
 def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsys):
     watcher = CodexCompanionWatcher(tmp_path, analyze=True, once=True)
-    watcher.store = CompanionStore(root=tmp_path / "store")
+    watcher.store = HermesStore(root=tmp_path / "store")
     event = {"event_id": "evt3", "workspace_root": str(tmp_path), "changes": []}
 
     with patch("hermes_cli.codex_companion.analyze_change_set", return_value={"analysis": "full review body"}):
         watcher._process_event(event)
 
     output = capsys.readouterr().out
-    assert "[codex-watch] analysis saved:" in output
+    assert "[store] output saved:" in output
     assert "full review body" not in output
+
+
+def test_store_command_output_writes_readable_multiline_json(tmp_path):
+    store = HermesStore(root=tmp_path / "store")
+
+    output_path = store.save_command_output(
+        command="flow",
+        title="Flow Explain",
+        subtitle="forward @ nanochat/gpt.py",
+        body="## 概要\nline one\nline two",
+        workspace_root="/workspace/demo",
+        session_id="sess1",
+        metadata={"symbol": "forward"},
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["kind"] == "command_output"
+    assert payload["command"] == "flow"
+    assert payload["content"]["lines"] == ["## 概要", "line one", "line two"]
+    assert payload["metadata"]["symbol"] == "forward"

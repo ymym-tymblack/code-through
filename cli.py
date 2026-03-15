@@ -2819,6 +2819,34 @@ class HermesCLI:
             padding=(1, 2),
         ))
 
+    def _store_command_output(
+        self,
+        *,
+        command_name: str,
+        title: str,
+        body: str = "",
+        subtitle: str = "",
+        status: str = "ok",
+        metadata: Optional[dict[str, Any]] = None,
+        output_id: Optional[str] = None,
+    ) -> None:
+        try:
+            from hermes_cli.codex_companion import HermesStore
+
+            HermesStore().save_command_output(
+                command=command_name,
+                title=title,
+                body=body,
+                subtitle=subtitle,
+                workspace_root=str(getattr(self, "workspace_root", "")),
+                session_id=str(getattr(self, "session_id", "")),
+                status=status,
+                metadata=metadata or {},
+                output_id=output_id,
+            )
+        except Exception:
+            pass
+
     def _start_review_watcher(self) -> bool:
         if self._review_thread and self._review_thread.is_alive():
             return True
@@ -2890,7 +2918,15 @@ class HermesCLI:
         self._review_watcher = None
         self._review_thread = None
 
-    def _run_review_prompt(self, prompt: str, *, title: str, subtitle: str = "") -> None:
+    def _run_review_prompt(
+        self,
+        prompt: str,
+        *,
+        title: str,
+        subtitle: str = "",
+        command_name: str = "review",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot run review analysis: no valid credentials.")
             return
@@ -2909,8 +2945,28 @@ class HermesCLI:
                         "api_mode": self.api_mode,
                     },
                 )
-                self._render_review_panel(title, result.get("analysis", ""), subtitle=subtitle)
+                body = result.get("analysis", "")
+                self._store_command_output(
+                    command_name=command_name,
+                    title=title,
+                    body=body,
+                    subtitle=subtitle,
+                    status="ok",
+                    metadata={
+                        "provider": result.get("provider"),
+                        "model": result.get("model"),
+                        **(metadata or {}),
+                    },
+                )
+                self._render_review_panel(title, body, subtitle=subtitle)
             except Exception as exc:
+                self._store_command_output(
+                    command_name=command_name,
+                    title=title,
+                    subtitle=subtitle,
+                    status="error",
+                    metadata={"error": str(exc), **(metadata or {})},
+                )
                 print()
                 _cprint(f"  ❌ {title} failed: {exc}")
             finally:
@@ -2952,7 +3008,13 @@ class HermesCLI:
                 target_path=rel_path,
                 directory_context=directory_context,
             )
-            self._run_review_prompt(prompt, title="Directory Explain", subtitle=rel_path)
+            self._run_review_prompt(
+                prompt,
+                title="Directory Explain",
+                subtitle=rel_path,
+                command_name="explain",
+                metadata={"target_path": rel_path, "kind": "directory"},
+            )
             return
 
         if not target.is_file():
@@ -2965,7 +3027,13 @@ class HermesCLI:
             rel_path = target_path
         related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
         prompt = build_file_explanation_prompt(workspace_root, target_path=rel_path, related_files=related)
-        self._run_review_prompt(prompt, title="File Explain", subtitle=rel_path)
+        self._run_review_prompt(
+            prompt,
+            title="File Explain",
+            subtitle=rel_path,
+            command_name="explain",
+            metadata={"target_path": rel_path, "kind": "file", "related_files": related},
+        )
 
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()
@@ -2995,33 +3063,39 @@ class HermesCLI:
             symbol=symbol,
             related_files=related,
         )
-        self._run_review_prompt(prompt, title="Flow Explain", subtitle=f"{symbol} @ {target_path}")
+        self._run_review_prompt(
+            prompt,
+            title="Flow Explain",
+            subtitle=f"{symbol} @ {target_path}",
+            command_name="flow",
+            metadata={"target_path": target_path, "symbol": symbol, "related_files": related},
+        )
 
     def _handle_review_command(self, cmd: str) -> None:
         parts = cmd.strip().split(maxsplit=2)
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "on":
             if self._start_review_watcher():
-                _cprint("  ✅ Diff review watcher enabled.")
+                _cprint("  ✅ Diff review store enabled.")
             else:
-                _cprint("  (>_<) Failed to enable diff review watcher.")
+                _cprint("  (>_<) Failed to enable diff review store.")
             return
         if action == "off":
             self._stop_review_watcher()
-            _cprint("  Diff review watcher disabled.")
+            _cprint("  Diff review store disabled.")
             return
         if action == "status":
             status = "on" if self._review_thread and self._review_thread.is_alive() else "off"
             latest = ""
             if self._review_latest_event:
                 latest = f" latest event: {self._review_latest_event.get('event_id', '')[:8]}"
-            _cprint(f"  Diff review watcher: {status}.{latest}")
+            _cprint(f"  Diff review store: {status}.{latest}")
             return
         if action == "last":
             analysis = self._review_latest_analysis
             if not analysis:
-                from hermes_cli.codex_companion import CompanionStore
-                analysis = CompanionStore().load_latest_analysis()
+                from hermes_cli.codex_companion import HermesStore
+                analysis = HermesStore().load_latest_analysis()
             if not analysis:
                 _cprint("  No diff review available yet.")
                 return
