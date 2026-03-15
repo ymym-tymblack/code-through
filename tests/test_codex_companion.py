@@ -2,8 +2,11 @@ import json
 from argparse import Namespace
 
 from hermes_cli.codex_companion import (
+    CodexCompanionWatcher,
     CompanionStore,
+    PendingChange,
     build_diff_text,
+    collect_related_context,
     collect_workspace_snapshot,
     detect_changes,
     run_codex_watch,
@@ -75,3 +78,121 @@ def test_run_codex_watch_rejects_missing_workspace(tmp_path):
     )
 
     assert run_codex_watch(args) == 1
+
+
+def test_merge_changes_drops_create_then_delete(tmp_path):
+    watcher = CodexCompanionWatcher(tmp_path, analyze=False, once=True)
+    watcher._pending["demo.py"] = PendingChange(
+        path="demo.py",
+        change_type="created",
+        old_content="",
+        new_content="v1\n",
+        first_seen_at=1.0,
+        updated_at=1.0,
+    )
+    watcher._merge_changes(
+        {
+            "demo.py": PendingChange(
+                path="demo.py",
+                change_type="deleted",
+                old_content="v1\n",
+                new_content="",
+                first_seen_at=2.0,
+                updated_at=2.0,
+            )
+        }
+    )
+
+    assert watcher._pending == {}
+
+
+def test_merge_changes_turns_delete_then_recreate_into_modify(tmp_path):
+    watcher = CodexCompanionWatcher(tmp_path, analyze=False, once=True)
+    watcher._pending["demo.py"] = PendingChange(
+        path="demo.py",
+        change_type="deleted",
+        old_content="before\n",
+        new_content="",
+        first_seen_at=1.0,
+        updated_at=1.0,
+    )
+    watcher._merge_changes(
+        {
+            "demo.py": PendingChange(
+                path="demo.py",
+                change_type="created",
+                old_content="",
+                new_content="after\n",
+                first_seen_at=2.0,
+                updated_at=2.0,
+            )
+        }
+    )
+
+    change = watcher._pending["demo.py"]
+    assert change.change_type == "modified"
+    assert change.old_content == "before\n"
+    assert change.new_content == "after\n"
+
+
+def test_merge_changes_drops_create_modify_delete_sequence(tmp_path):
+    watcher = CodexCompanionWatcher(tmp_path, analyze=False, once=True)
+    watcher._pending["demo.py"] = PendingChange(
+        path="demo.py",
+        change_type="created",
+        old_content="",
+        new_content="v1\n",
+        first_seen_at=1.0,
+        updated_at=1.0,
+    )
+    watcher._merge_changes(
+        {
+            "demo.py": PendingChange(
+                path="demo.py",
+                change_type="modified",
+                old_content="v1\n",
+                new_content="v2\n",
+                first_seen_at=2.0,
+                updated_at=2.0,
+            )
+        }
+    )
+    watcher._merge_changes(
+        {
+            "demo.py": PendingChange(
+                path="demo.py",
+                change_type="deleted",
+                old_content="v2\n",
+                new_content="",
+                first_seen_at=3.0,
+                updated_at=3.0,
+            )
+        }
+    )
+
+    assert watcher._pending == {}
+
+
+def test_collect_related_context_follows_python_imports(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "main.py").write_text("from pkg.helper import helper\n\nprint(helper())\n", encoding="utf-8")
+
+    related = collect_related_context(tmp_path, changed_paths=["main.py"])
+
+    assert related
+    assert related[0]["path"] == "pkg/helper.py"
+    assert "def helper" in related[0]["content"]
+
+
+def test_companion_store_loads_latest_saved_artifacts(tmp_path):
+    store = CompanionStore(root=tmp_path / "store")
+    event = {"event_id": "evt2", "changes": [{"path": "demo.py"}]}
+    analysis = {"event_id": "evt2", "analysis": "ok"}
+
+    store.save_event(event)
+    store.save_analysis("evt2", analysis)
+
+    assert store.load_latest_event()["event_id"] == "evt2"
+    assert store.load_latest_analysis()["analysis"] == "ok"

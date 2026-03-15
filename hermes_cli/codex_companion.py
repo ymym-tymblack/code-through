@@ -14,11 +14,13 @@ import difflib
 import hashlib
 import json
 import os
+import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence
 
 from hermes_cli.config import ensure_hermes_home, get_hermes_home, load_config
 from hermes_cli.runtime_provider import (
@@ -66,6 +68,11 @@ DEFAULT_IGNORE_SUFFIXES = {
 }
 
 DEFAULT_MAX_FILE_BYTES = 200_000
+DEFAULT_MAX_CHANGES_PER_EVENT = 8
+DEFAULT_MAX_DIFF_CHARS = 12_000
+DEFAULT_MAX_RELATED_FILES = 6
+DEFAULT_MAX_RELATED_CHARS = 16_000
+DEFAULT_SYMBOL_MATCHES = 5
 
 
 @dataclass(frozen=True)
@@ -124,6 +131,142 @@ def should_ignore_path(path: Path, root: Path) -> bool:
     if any(part in DEFAULT_IGNORE_DIRS for part in rel_parts[:-1]):
         return True
     return path.suffix.lower() in DEFAULT_IGNORE_SUFFIXES
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...[truncated]..."
+
+
+def _read_workspace_file(root: Path, rel_path: str, *, max_file_bytes: int) -> Optional[str]:
+    path = (root / rel_path).resolve()
+    try:
+        if not path.is_file() or should_ignore_path(path, root):
+            return None
+        return _load_text_file(path, max_file_bytes=max_file_bytes)
+    except Exception:
+        return None
+
+
+def _candidate_import_paths(module: str, *, source_path: str, workspace_root: Path) -> list[str]:
+    source_parts = Path(source_path).parts[:-1]
+    candidates: list[str] = []
+    stripped = module.strip()
+    if not stripped:
+        return candidates
+
+    if stripped.startswith("."):
+        dots = len(stripped) - len(stripped.lstrip("."))
+        suffix = stripped[dots:]
+        base_parts = list(source_parts[: max(0, len(source_parts) - max(0, dots - 1))])
+        if suffix:
+            base_parts.extend([part for part in suffix.split(".") if part])
+        rel = Path(*base_parts) if base_parts else Path()
+        for candidate in (rel.with_suffix(".py"), rel / "__init__.py"):
+            if candidate.parts:
+                candidates.append(str(candidate))
+        return candidates
+
+    rel = Path(*[part for part in stripped.split(".") if part])
+    for candidate in (rel.with_suffix(".py"), rel / "__init__.py"):
+        if candidate.parts:
+            candidates.append(str(candidate))
+
+    return [
+        cand for cand in candidates
+        if (workspace_root / cand).exists()
+    ]
+
+
+def _extract_related_paths_from_text(text: str, *, source_path: str, workspace_root: Path) -> list[str]:
+    related: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"^\s*from\s+([.\w]+)\s+import\s+", text, re.MULTILINE):
+        for candidate in _candidate_import_paths(match.group(1), source_path=source_path, workspace_root=workspace_root):
+            if candidate != source_path and candidate not in seen:
+                seen.add(candidate)
+                related.append(candidate)
+    for match in re.finditer(r"^\s*import\s+([a-zA-Z0-9_.,\s]+)", text, re.MULTILINE):
+        modules = [part.strip().split(" as ", 1)[0].strip() for part in match.group(1).split(",")]
+        for module in modules:
+            for candidate in _candidate_import_paths(module, source_path=source_path, workspace_root=workspace_root):
+                if candidate != source_path and candidate not in seen:
+                    seen.add(candidate)
+                    related.append(candidate)
+    for match in re.finditer(r"""from\s+['"](\.{1,2}/[^'"]+)['"]|import\s+['"](\.{1,2}/[^'"]+)['"]""", text):
+        raw = match.group(1) or match.group(2)
+        base = (Path(source_path).parent / raw).resolve().relative_to(workspace_root)
+        stem = str(base)
+        for suffix in ("", ".ts", ".tsx", ".js", ".jsx", ".py"):
+            candidate = stem if suffix == "" else f"{stem}{suffix}"
+            if (workspace_root / candidate).exists() and candidate not in seen and candidate != source_path:
+                seen.add(candidate)
+                related.append(candidate)
+                break
+    return related
+
+
+def collect_related_context(
+    workspace_root: Path,
+    *,
+    changed_paths: Sequence[str],
+    snapshots: Optional[Dict[str, FileSnapshot]] = None,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    max_related_files: int = DEFAULT_MAX_RELATED_FILES,
+    max_total_chars: int = DEFAULT_MAX_RELATED_CHARS,
+) -> list[dict[str, str]]:
+    related: list[dict[str, str]] = []
+    seen: set[str] = set(changed_paths)
+    total_chars = 0
+
+    for rel_path in changed_paths:
+        text = None
+        if snapshots and rel_path in snapshots:
+            text = snapshots[rel_path].content
+        if text is None:
+            text = _read_workspace_file(workspace_root, rel_path, max_file_bytes=max_file_bytes) or ""
+        for candidate in _extract_related_paths_from_text(text, source_path=rel_path, workspace_root=workspace_root):
+            if candidate in seen:
+                continue
+            candidate_text = _read_workspace_file(workspace_root, candidate, max_file_bytes=max_file_bytes)
+            if not candidate_text:
+                continue
+            remaining = max_total_chars - total_chars
+            if remaining <= 0:
+                return related
+            excerpt = _truncate_text(candidate_text, min(remaining, 4000))
+            related.append({"path": candidate, "content": excerpt})
+            total_chars += len(excerpt)
+            seen.add(candidate)
+            if len(related) >= max_related_files:
+                return related
+    return related
+
+
+def _prune_event(event: dict) -> dict:
+    pruned = dict(event)
+    changes = list(event.get("changes", []))
+    kept: list[dict[str, Any]] = []
+    total_chars = 0
+    omitted = 0
+    for change in changes:
+        if len(kept) >= DEFAULT_MAX_CHANGES_PER_EVENT:
+            omitted += 1
+            continue
+        diff_text = str(change.get("diff_text") or "")
+        remaining = DEFAULT_MAX_DIFF_CHARS - total_chars
+        if remaining <= 0:
+            omitted += 1
+            continue
+        change_copy = dict(change)
+        change_copy["diff_text"] = _truncate_text(diff_text, remaining)
+        total_chars += len(change_copy["diff_text"])
+        kept.append(change_copy)
+    pruned["changes"] = kept
+    if omitted:
+        pruned["omitted_changes"] = omitted
+    return pruned
 
 
 def collect_workspace_snapshot(
@@ -248,6 +391,24 @@ class CompanionStore:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    def load_latest_analysis(self) -> Optional[dict]:
+        candidates = sorted(self.analysis_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return None
+
+    def load_latest_event(self) -> Optional[dict]:
+        candidates = sorted(self.events_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return None
+
 
 def _event_payload(
     *,
@@ -288,17 +449,20 @@ def _default_analysis_model() -> str:
 
 
 def _build_analysis_prompt(event: dict) -> str:
+    event = _prune_event(event)
     lines = [
         "You are reviewing a code change-set produced by a coding agent.",
         "Use the diff as the primary evidence. Only infer intent when strongly supported.",
-        "If you need extra context, you may read the changed files, but stay focused.",
+        "If you need extra context, you may read the changed files and related files, but stay focused.",
         "",
         "Return exactly these sections in Japanese:",
         "## 変更説明",
+        "## 処理フロー",
         "## リスク",
         "## 改善提案",
         "",
         "In 変更説明, describe processing flow, major functions, and responsibility changes.",
+        "In 処理フロー, explain the call flow and data flow in the changed code.",
         "In リスク, call out likely bugs, regressions, and missing edge cases.",
         "In 改善提案, suggest concrete follow-up improvements or tests.",
         "",
@@ -311,17 +475,87 @@ def _build_analysis_prompt(event: dict) -> str:
         lines.append("")
         lines.append(f"### {change['change_type']}: {change['path']}")
         lines.append(change["diff_text"] or "[no diff text]")
+    omitted = int(event.get("omitted_changes") or 0)
+    if omitted:
+        lines.extend(["", f"Note: {omitted} additional change(s) were omitted to keep the review focused."])
+    related_files = event.get("related_files") or []
+    if related_files:
+        lines.extend(["", "Related files (truncated excerpts):"])
+        for item in related_files:
+            lines.extend(["", f"### related: {item['path']}", item["content"]])
     return "\n".join(lines)
 
 
-def analyze_change_set(
-    event: dict,
+def build_file_explanation_prompt(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    symbol: Optional[str] = None,
+    related_files: Optional[Sequence[dict[str, str]]] = None,
+) -> str:
+    lines = [
+        "You are explaining source code to a developer in Japanese.",
+        "Prefer direct evidence from the target file. Read additional files only if necessary.",
+        "",
+        "Return exactly these sections in Japanese:",
+        "## 概要",
+        "## 主要な関数と責務",
+        "## 処理フロー",
+        "## 改善ポイント",
+        "",
+        f"Workspace: {workspace_root}",
+        f"Target file: {target_path}",
+    ]
+    if symbol:
+        lines.append(f"Focus symbol: {symbol}")
+    if related_files:
+        lines.extend(["", "Related files (truncated excerpts):"])
+        for item in related_files:
+            lines.extend(["", f"### related: {item['path']}", item["content"]])
+    return "\n".join(lines)
+
+
+def find_symbol_candidates(
+    workspace_root: Path,
+    *,
+    symbol: str,
+    max_matches: int = DEFAULT_SYMBOL_MATCHES,
+) -> list[str]:
+    if not symbol.strip():
+        return []
+    patterns = [
+        re.compile(rf"^\s*def\s+{re.escape(symbol)}\b", re.MULTILINE),
+        re.compile(rf"^\s*class\s+{re.escape(symbol)}\b", re.MULTILINE),
+        re.compile(rf"\b{re.escape(symbol)}\b"),
+    ]
+    matches: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace_root):
+        current_dir = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORE_DIRS]
+        for filename in filenames:
+            path = current_dir / filename
+            if should_ignore_path(path, workspace_root):
+                continue
+            text = _load_text_file(path, max_file_bytes=DEFAULT_MAX_FILE_BYTES)
+            if text is None:
+                continue
+            if any(pattern.search(text) for pattern in patterns):
+                matches.append(str(path.relative_to(workspace_root)))
+                if len(matches) >= max_matches:
+                    return matches
+    return matches
+
+
+def analyze_prompt(
+    prompt: str,
     *,
     model: Optional[str] = None,
+    session_id: Optional[str] = None,
+    runtime: Optional[dict[str, Any]] = None,
 ) -> dict:
     from run_agent import AIAgent
 
-    runtime = resolve_runtime_provider()
+    runtime = runtime or resolve_runtime_provider()
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -331,19 +565,78 @@ def analyze_change_set(
         enabled_toolsets=["file", "session_search"],
         quiet_mode=True,
         platform="cli",
-        session_id=f"codex-companion-{event['event_id']}",
+        session_id=session_id or f"codex-companion-{uuid.uuid4().hex}",
         skip_memory=True,
     )
-    prompt = _build_analysis_prompt(event)
     result = agent.run_conversation(prompt)
     response_text = result.get("final_response") if isinstance(result, dict) else str(result)
     return {
-        "event_id": event["event_id"],
         "model": model or _default_analysis_model(),
         "provider": runtime.get("provider"),
         "analysis": response_text or "",
         "timestamp": time.time(),
     }
+
+
+def analyze_change_set(
+    event: dict,
+    *,
+    model: Optional[str] = None,
+    runtime: Optional[dict[str, Any]] = None,
+) -> dict:
+    event = dict(event)
+    root = Path(event["workspace_root"])
+    snapshots = collect_workspace_snapshot(root, max_file_bytes=DEFAULT_MAX_FILE_BYTES)
+    event["related_files"] = collect_related_context(
+        root,
+        changed_paths=[str(change["path"]) for change in event.get("changes", [])],
+        snapshots=snapshots,
+    )
+    prompt = _build_analysis_prompt(event)
+    result = analyze_prompt(
+        prompt,
+        model=model,
+        session_id=f"codex-companion-{event['event_id']}",
+        runtime=runtime,
+    )
+    return {
+        "event_id": event["event_id"],
+        "model": model or _default_analysis_model(),
+        "provider": result.get("provider"),
+        "analysis": result.get("analysis", ""),
+        "timestamp": result.get("timestamp", time.time()),
+        "related_files": event["related_files"],
+    }
+
+
+def explain_file(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    symbol: Optional[str] = None,
+    model: Optional[str] = None,
+    runtime: Optional[dict[str, Any]] = None,
+) -> dict:
+    related = collect_related_context(
+        workspace_root,
+        changed_paths=[target_path],
+        max_related_files=4,
+        max_total_chars=10_000,
+    )
+    prompt = build_file_explanation_prompt(
+        workspace_root,
+        target_path=target_path,
+        symbol=symbol,
+        related_files=related,
+    )
+    result = analyze_prompt(
+        prompt,
+        model=model,
+        session_id=f"codex-companion-explain-{uuid.uuid4().hex}",
+        runtime=runtime,
+    )
+    result.update({"target_path": target_path, "symbol": symbol or "", "related_files": related})
+    return result
 
 
 class CodexCompanionWatcher:
@@ -356,6 +649,10 @@ class CodexCompanionWatcher:
         analyze: bool = True,
         once: bool = False,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        runtime: Optional[dict[str, Any]] = None,
+        on_event: Optional[Callable[[dict, Path], None]] = None,
+        on_analysis: Optional[Callable[[dict, Path], None]] = None,
+        stop_event: Optional[threading.Event] = None,
     ):
         self.workspace_root = workspace_root.resolve()
         self.poll_interval = poll_interval
@@ -363,6 +660,10 @@ class CodexCompanionWatcher:
         self.analyze = analyze
         self.once = once
         self.max_file_bytes = max_file_bytes
+        self.runtime = runtime
+        self.on_event = on_event
+        self.on_analysis = on_analysis
+        self.stop_event = stop_event or threading.Event()
         self.session_id = uuid.uuid4().hex
         self.store = CompanionStore()
         self._previous_snapshot = collect_workspace_snapshot(
@@ -376,6 +677,29 @@ class CodexCompanionWatcher:
             existing = self._pending.get(rel_path)
             if existing is None:
                 self._pending[rel_path] = change
+                continue
+            if existing.change_type == "created" and change.change_type == "deleted":
+                # A file that is created and deleted within the debounce window
+                # has no net effect and should not be emitted.
+                self._pending.pop(rel_path, None)
+                continue
+            if existing.change_type == "created" and change.change_type == "modified":
+                existing.refresh(
+                    change_type="created",
+                    new_content=change.new_content,
+                    updated_at=change.updated_at,
+                )
+                continue
+            if existing.change_type == "deleted" and change.change_type == "created":
+                if existing.old_content == change.new_content:
+                    # Delete/recreate with identical content is also a no-op.
+                    self._pending.pop(rel_path, None)
+                    continue
+                existing.refresh(
+                    change_type="modified",
+                    new_content=change.new_content,
+                    updated_at=change.updated_at,
+                )
                 continue
             existing.refresh(
                 change_type=change.change_type,
@@ -400,10 +724,12 @@ class CodexCompanionWatcher:
     def _process_event(self, event: dict) -> None:
         event_path = self.store.save_event(event)
         print(f"[codex-watch] change-set saved: {event_path}")
+        if self.on_event is not None:
+            self.on_event(event, event_path)
         if not self.analyze:
             return
         try:
-            analysis = analyze_change_set(event)
+            analysis = analyze_change_set(event, runtime=self.runtime)
         except Exception as exc:
             error_payload = {
                 "event_id": event["event_id"],
@@ -413,15 +739,22 @@ class CodexCompanionWatcher:
             analysis_path = self.store.save_analysis(event["event_id"], error_payload)
             print(f"[codex-watch] analysis failed: {analysis_path}")
             print(error_payload["error"])
+            if self.on_analysis is not None:
+                self.on_analysis(error_payload, analysis_path)
             return
         analysis_path = self.store.save_analysis(event["event_id"], analysis)
         print(f"[codex-watch] analysis saved: {analysis_path}")
         print(analysis["analysis"])
+        if self.on_analysis is not None:
+            self.on_analysis(analysis, analysis_path)
+
+    def stop(self) -> None:
+        self.stop_event.set()
 
     def run(self) -> int:
         print(f"[codex-watch] watching {self.workspace_root}")
         try:
-            while True:
+            while not self.stop_event.is_set():
                 current_snapshot = collect_workspace_snapshot(
                     self.workspace_root,
                     max_file_bytes=self.max_file_bytes,
@@ -437,7 +770,7 @@ class CodexCompanionWatcher:
                         return 0
                 if self.once and not changes:
                     return 0
-                time.sleep(self.poll_interval)
+                self.stop_event.wait(self.poll_interval)
         except KeyboardInterrupt:
             event = self._flush_ready(force=True)
             if event is not None:
@@ -512,9 +845,14 @@ __all__ = [
     "CompanionStore",
     "CodexCompanionWatcher",
     "PendingChange",
+    "analyze_prompt",
     "build_arg_parser",
     "build_diff_text",
+    "build_file_explanation_prompt",
     "collect_workspace_snapshot",
+    "collect_related_context",
     "detect_changes",
+    "explain_file",
+    "find_symbol_candidates",
     "run_codex_watch",
 ]

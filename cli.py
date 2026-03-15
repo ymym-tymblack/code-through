@@ -203,6 +203,12 @@ def load_cli_config() -> Dict[str, Any]:
                 "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
             },
         },
+        "review": {
+            "enabled": False,
+            "poll_interval": 1.0,
+            "debounce_seconds": 2.0,
+            "max_file_bytes": 200_000,
+        },
         "toolsets": ["all"],
         "display": {
             "compact": False,
@@ -1328,6 +1334,12 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._review_watcher = None
+        self._review_thread: Optional[threading.Thread] = None
+        self._review_stop_event = threading.Event()
+        self._review_enabled = bool(CLI_CONFIG.get("review", {}).get("enabled", False))
+        self._review_latest_analysis: Optional[dict[str, Any]] = None
+        self._review_latest_event: Optional[dict[str, Any]] = None
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -2197,6 +2209,8 @@ class HermesCLI:
         print(f"  Max Turns:  {self.max_turns}")
         print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
         print(f"  Verbose:    {self.verbose}")
+        review_status = "on" if (self._review_thread and self._review_thread.is_alive()) or self._review_enabled else "off"
+        print(f"  Diff Review:{review_status:>5}")
         print()
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -2783,7 +2797,230 @@ class HermesCLI:
             print("       DISCORD_BOT_TOKEN=your_token")
             print("    2. Or create ~/.hermes/gateway.json")
             print()
-    
+
+    def _render_review_panel(self, title: str, body: str, *, subtitle: str = "") -> None:
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            border = skin.get_color("response_border", "#CD7F32")
+            text_color = skin.get_color("banner_text", "#FFF8DC")
+        except Exception:
+            border = "#CD7F32"
+            text_color = "#FFF8DC"
+        panel_title = title if not subtitle else f"{title} · {subtitle}"
+        ChatConsole().print(Panel(
+            _rich_text_from_ansi(body or "(No analysis generated)"),
+            title=f"[{border} bold]{panel_title}[/]",
+            title_align="left",
+            border_style=border,
+            style=text_color,
+            box=rich_box.HORIZONTALS,
+            padding=(1, 2),
+        ))
+
+    def _start_review_watcher(self) -> bool:
+        if self._review_thread and self._review_thread.is_alive():
+            return True
+        if not self._ensure_runtime_credentials():
+            return False
+
+        from hermes_cli.codex_companion import CodexCompanionWatcher
+
+        self._review_stop_event = threading.Event()
+        workspace_root = Path(os.getcwd()).resolve()
+        review_cfg = CLI_CONFIG.get("review", {}) or {}
+
+        def _on_event(event: dict, _path: Path) -> None:
+            self._review_latest_event = event
+
+        def _on_analysis(payload: dict, _path: Path) -> None:
+            self._review_latest_analysis = payload
+            print()
+            if payload.get("analysis"):
+                changed = ", ".join(change["path"] for change in (self._review_latest_event or {}).get("changes", [])[:3])
+                if len((self._review_latest_event or {}).get("changes", [])) > 3:
+                    changed += ", ..."
+                self._render_review_panel("Diff Review", payload.get("analysis", ""), subtitle=changed)
+            else:
+                _cprint(f"  ⚠️  Diff review failed: {payload.get('error', 'unknown error')}")
+            if self._app:
+                self._invalidate(min_interval=0)
+
+        self._review_watcher = CodexCompanionWatcher(
+            workspace_root,
+            poll_interval=float(review_cfg.get("poll_interval", 1.0)),
+            debounce_seconds=float(review_cfg.get("debounce_seconds", 2.0)),
+            max_file_bytes=int(review_cfg.get("max_file_bytes", 200_000)),
+            runtime={
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+            },
+            on_event=_on_event,
+            on_analysis=_on_analysis,
+            stop_event=self._review_stop_event,
+        )
+
+        def _run() -> None:
+            try:
+                self._review_watcher.run()
+            except Exception as exc:
+                print()
+                _cprint(f"  ⚠️  Review watcher stopped: {exc}")
+
+        self._review_thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"review-watcher-{self.session_id}",
+        )
+        self._review_thread.start()
+        self._review_enabled = True
+        return True
+
+    def _stop_review_watcher(self) -> None:
+        self._review_enabled = False
+        self._review_stop_event.set()
+        if self._review_watcher is not None:
+            try:
+                self._review_watcher.stop()
+            except Exception:
+                pass
+        self._review_watcher = None
+        self._review_thread = None
+
+    def _run_review_prompt(self, prompt: str, *, title: str, subtitle: str = "") -> None:
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot run review analysis: no valid credentials.")
+            return
+
+        def _worker() -> None:
+            try:
+                from hermes_cli.codex_companion import analyze_prompt
+                result = analyze_prompt(
+                    prompt,
+                    model=self.model,
+                    session_id=f"review-{uuid.uuid4().hex}",
+                    runtime={
+                        "api_key": self.api_key,
+                        "base_url": self.base_url,
+                        "provider": self.provider,
+                        "api_mode": self.api_mode,
+                    },
+                )
+                self._render_review_panel(title, result.get("analysis", ""), subtitle=subtitle)
+            except Exception as exc:
+                print()
+                _cprint(f"  ❌ {title} failed: {exc}")
+            finally:
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        threading.Thread(target=_worker, daemon=True, name=f"review-task-{uuid.uuid4().hex[:6]}").start()
+
+    def _handle_explain_command(self, cmd: str) -> None:
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /explain <path>")
+            return
+        target_path = parts[1].strip()
+        workspace_root = Path(os.getcwd()).resolve()
+        target_file = (workspace_root / target_path).resolve()
+        if not target_file.exists() or not target_file.is_file():
+            _cprint(f"  (>_<) File not found: {target_path}")
+            return
+
+        from hermes_cli.codex_companion import build_file_explanation_prompt, collect_related_context
+        related = collect_related_context(workspace_root, changed_paths=[target_path], max_related_files=4, max_total_chars=10_000)
+        prompt = build_file_explanation_prompt(workspace_root, target_path=target_path, related_files=related)
+        self._run_review_prompt(prompt, title="File Explain", subtitle=target_path)
+
+    def _handle_flow_command(self, cmd: str) -> None:
+        parts = cmd.strip().split()
+        if len(parts) < 2:
+            _cprint("  Usage: /flow <symbol> [path]")
+            return
+        symbol = parts[1].strip()
+        explicit_path = parts[2].strip() if len(parts) > 2 else ""
+        workspace_root = Path(os.getcwd()).resolve()
+        from hermes_cli.codex_companion import (
+            build_file_explanation_prompt,
+            collect_related_context,
+            find_symbol_candidates,
+        )
+
+        target_path = explicit_path
+        if not target_path:
+            matches = find_symbol_candidates(workspace_root, symbol=symbol)
+            if not matches:
+                _cprint(f"  (>_<) Could not find symbol: {symbol}")
+                return
+            target_path = matches[0]
+        related = collect_related_context(workspace_root, changed_paths=[target_path], max_related_files=4, max_total_chars=10_000)
+        prompt = build_file_explanation_prompt(
+            workspace_root,
+            target_path=target_path,
+            symbol=symbol,
+            related_files=related,
+        )
+        self._run_review_prompt(prompt, title="Flow Explain", subtitle=f"{symbol} @ {target_path}")
+
+    def _handle_review_command(self, cmd: str) -> None:
+        parts = cmd.strip().split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        if action == "on":
+            if self._start_review_watcher():
+                _cprint("  ✅ Diff review watcher enabled.")
+            else:
+                _cprint("  (>_<) Failed to enable diff review watcher.")
+            return
+        if action == "off":
+            self._stop_review_watcher()
+            _cprint("  Diff review watcher disabled.")
+            return
+        if action == "status":
+            status = "on" if self._review_thread and self._review_thread.is_alive() else "off"
+            latest = ""
+            if self._review_latest_event:
+                latest = f" latest event: {self._review_latest_event.get('event_id', '')[:8]}"
+            _cprint(f"  Diff review watcher: {status}.{latest}")
+            return
+        if action == "last":
+            analysis = self._review_latest_analysis
+            if not analysis:
+                from hermes_cli.codex_companion import CompanionStore
+                analysis = CompanionStore().load_latest_analysis()
+            if not analysis:
+                _cprint("  No diff review available yet.")
+                return
+            if analysis.get("analysis"):
+                self._render_review_panel("Diff Review", analysis.get("analysis", ""))
+            else:
+                _cprint(f"  Last diff review failed: {analysis.get('error', 'unknown error')}")
+            return
+        if action == "apply":
+            analysis = self._review_latest_analysis
+            event = self._review_latest_event
+            if not analysis or not analysis.get("analysis") or not event:
+                _cprint("  No completed diff review available to apply from.")
+                return
+            extra = parts[2].strip() if len(parts) > 2 else ""
+            changed_paths = ", ".join(change["path"] for change in event.get("changes", []))
+            prompt = (
+                "Use the latest automatic diff review as guidance and implement the suggested improvements directly in the codebase.\n\n"
+                f"Changed files: {changed_paths}\n\n"
+                "Review:\n"
+                f"{analysis['analysis']}\n\n"
+            )
+            if extra:
+                prompt += f"Additional instruction: {extra}\n"
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(prompt)
+                _cprint("  Queued a follow-up implementation prompt from the latest diff review.")
+            return
+
+        _cprint("  Usage: /review [on|off|status|last|apply]")
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -3048,6 +3285,12 @@ class HermesCLI:
             self._handle_rollback_command(cmd_original)
         elif cmd_lower.startswith("/background"):
             self._handle_background_command(cmd_original)
+        elif cmd_lower.startswith("/review"):
+            self._handle_review_command(cmd_original)
+        elif cmd_lower.startswith("/explain"):
+            self._handle_explain_command(cmd_original)
+        elif cmd_lower.startswith("/flow"):
+            self._handle_flow_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
         elif cmd_lower.startswith("/voice"):
@@ -4607,6 +4850,11 @@ class HermesCLI:
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
+        if self._review_enabled:
+            if self._start_review_watcher():
+                _cprint("  🔎 Automatic diff review is enabled for this session.")
+            else:
+                _cprint("  ⚠️  Automatic diff review could not start; use /review on after fixing auth.")
         
         # State for async operation
         self._agent_running = False
@@ -5707,6 +5955,7 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
+            self._stop_review_watcher()
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:

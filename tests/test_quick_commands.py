@@ -85,6 +85,24 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_review_command_dispatches_to_handler(self):
+        cli = self._make_cli({})
+        cli._handle_review_command = MagicMock()
+        cli.process_command("/review status")
+        cli._handle_review_command.assert_called_once_with("/review status")
+
+    def test_explain_command_dispatches_to_handler(self):
+        cli = self._make_cli({})
+        cli._handle_explain_command = MagicMock()
+        cli.process_command("/explain cli.py")
+        cli._handle_explain_command.assert_called_once_with("/explain cli.py")
+
+    def test_flow_command_dispatches_to_handler(self):
+        cli = self._make_cli({})
+        cli._handle_flow_command = MagicMock()
+        cli.process_command("/flow run")
+        cli._handle_flow_command.assert_called_once_with("/flow run")
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
