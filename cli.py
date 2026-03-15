@@ -2926,15 +2926,46 @@ class HermesCLI:
             return
         target_path = parts[1].strip()
         workspace_root = self.workspace_root
-        target_file = (workspace_root / target_path).resolve()
-        if not target_file.exists() or not target_file.is_file():
+        target = (workspace_root / target_path).resolve()
+        if not target.exists():
+            _cprint(f"  (>_<) Path not found: {target_path}")
+            return
+
+        from hermes_cli.codex_companion import (
+            build_directory_explanation_prompt,
+            build_file_explanation_prompt,
+            collect_directory_context,
+            collect_related_context,
+        )
+
+        if target.is_dir():
+            try:
+                rel_path = str(target.relative_to(workspace_root))
+            except ValueError:
+                rel_path = target_path
+            directory_context = collect_directory_context(workspace_root, target_path=rel_path)
+            if not directory_context.get("entries"):
+                _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
+                return
+            prompt = build_directory_explanation_prompt(
+                workspace_root,
+                target_path=rel_path,
+                directory_context=directory_context,
+            )
+            self._run_review_prompt(prompt, title="Directory Explain", subtitle=rel_path)
+            return
+
+        if not target.is_file():
             _cprint(f"  (>_<) File not found: {target_path}")
             return
 
-        from hermes_cli.codex_companion import build_file_explanation_prompt, collect_related_context
-        related = collect_related_context(workspace_root, changed_paths=[target_path], max_related_files=4, max_total_chars=10_000)
-        prompt = build_file_explanation_prompt(workspace_root, target_path=target_path, related_files=related)
-        self._run_review_prompt(prompt, title="File Explain", subtitle=target_path)
+        try:
+            rel_path = str(target.relative_to(workspace_root))
+        except ValueError:
+            rel_path = target_path
+        related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
+        prompt = build_file_explanation_prompt(workspace_root, target_path=rel_path, related_files=related)
+        self._run_review_prompt(prompt, title="File Explain", subtitle=rel_path)
 
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()

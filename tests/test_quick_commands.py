@@ -103,6 +103,42 @@ class TestCLIQuickCommands:
         cli.process_command("/flow run")
         cli._handle_flow_command.assert_called_once_with("/flow run")
 
+    def test_explain_command_handles_file_path(self, tmp_path):
+        from cli import HermesCLI
+
+        target = tmp_path / "sample.py"
+        target.write_text("def run():\n    return 1\n", encoding="utf-8")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.workspace_root = tmp_path
+        cli._run_review_prompt = MagicMock()
+
+        cli._handle_explain_command("/explain sample.py")
+
+        cli._run_review_prompt.assert_called_once()
+        kwargs = cli._run_review_prompt.call_args.kwargs
+        assert kwargs["title"] == "File Explain"
+        assert kwargs["subtitle"] == "sample.py"
+
+    def test_explain_command_handles_directory_path(self, tmp_path):
+        from cli import HermesCLI
+
+        src_dir = tmp_path / "pkg"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("", encoding="utf-8")
+        (src_dir / "core.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.workspace_root = tmp_path
+        cli._run_review_prompt = MagicMock()
+
+        cli._handle_explain_command("/explain pkg")
+
+        cli._run_review_prompt.assert_called_once()
+        kwargs = cli._run_review_prompt.call_args.kwargs
+        assert kwargs["title"] == "Directory Explain"
+        assert kwargs["subtitle"] == "pkg"
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 

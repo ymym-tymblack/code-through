@@ -515,6 +515,117 @@ def build_file_explanation_prompt(
     return "\n".join(lines)
 
 
+def collect_directory_context(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    max_entries: int = 40,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    max_total_chars: int = 14_000,
+) -> dict[str, Any]:
+    target_dir = (workspace_root / target_path).resolve()
+    entries: list[dict[str, Any]] = []
+    total_chars = 0
+    omitted_entries = 0
+
+    try:
+        relative_target = target_dir.relative_to(workspace_root)
+    except ValueError:
+        relative_target = Path(target_path)
+
+    for dirpath, dirnames, filenames in os.walk(target_dir):
+        current_dir = Path(dirpath)
+        dirnames[:] = [d for d in sorted(dirnames) if d not in DEFAULT_IGNORE_DIRS]
+
+        for dirname in dirnames:
+            rel_path = str((current_dir / dirname).relative_to(workspace_root))
+            entries.append({"path": rel_path, "kind": "dir"})
+            if len(entries) >= max_entries:
+                omitted_entries += len(dirnames) - dirnames.index(dirname) - 1 + len(filenames)
+                break
+        if len(entries) >= max_entries:
+            break
+
+        for filename in sorted(filenames):
+            path = current_dir / filename
+            if should_ignore_path(path, workspace_root):
+                omitted_entries += 1
+                continue
+            rel_path = str(path.relative_to(workspace_root))
+            text = _load_text_file(path, max_file_bytes=max_file_bytes)
+            if text is None:
+                omitted_entries += 1
+                continue
+            remaining = max_total_chars - total_chars
+            excerpt = ""
+            if remaining > 0:
+                excerpt = _truncate_text(text, min(remaining, 1200))
+                total_chars += len(excerpt)
+            entries.append({"path": rel_path, "kind": "file", "content": excerpt})
+            if len(entries) >= max_entries:
+                break
+        if len(entries) >= max_entries:
+            break
+
+    all_paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(target_dir):
+        current_dir = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORE_DIRS]
+        for dirname in sorted(dirnames):
+            all_paths.append(str((current_dir / dirname).relative_to(workspace_root)))
+        for filename in sorted(filenames):
+            path = current_dir / filename
+            if should_ignore_path(path, workspace_root):
+                continue
+            if _load_text_file(path, max_file_bytes=max_file_bytes) is None:
+                continue
+            all_paths.append(str(path.relative_to(workspace_root)))
+
+    if len(all_paths) > len(entries):
+        omitted_entries += len(all_paths) - len(entries)
+
+    return {
+        "target_path": str(relative_target),
+        "entries": entries,
+        "total_entries": len(all_paths),
+        "omitted_entries": max(0, omitted_entries),
+    }
+
+
+def build_directory_explanation_prompt(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    directory_context: dict[str, Any],
+) -> str:
+    lines = [
+        "You are explaining a source directory to a developer in Japanese.",
+        "Prefer direct evidence from the listed files. Stay focused on architecture, call flow, and responsibilities.",
+        "",
+        "Return exactly these sections in Japanese:",
+        "## 概要",
+        "## 主要なファイルと責務",
+        "## 処理フロー",
+        "## 改善ポイント",
+        "",
+        f"Workspace: {workspace_root}",
+        f"Target directory: {target_path}",
+        f"Included entries: {directory_context.get('total_entries', 0)}",
+    ]
+    omitted = int(directory_context.get("omitted_entries") or 0)
+    if omitted:
+        lines.append(f"Omitted entries: {omitted}")
+    lines.extend(["", "Directory entries (truncated excerpts):"])
+    for item in directory_context.get("entries", []):
+        label = item.get("path", "")
+        kind = item.get("kind", "file")
+        lines.extend(["", f"### {kind}: {label}"])
+        content = item.get("content") or ""
+        if content:
+            lines.append(content)
+    return "\n".join(lines)
+
+
 def find_symbol_candidates(
     workspace_root: Path,
     *,
@@ -847,8 +958,10 @@ __all__ = [
     "PendingChange",
     "analyze_prompt",
     "build_arg_parser",
+    "build_directory_explanation_prompt",
     "build_diff_text",
     "build_file_explanation_prompt",
+    "collect_directory_context",
     "collect_workspace_snapshot",
     "collect_related_context",
     "detect_changes",
