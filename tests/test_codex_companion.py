@@ -1,5 +1,6 @@
 import json
 from argparse import Namespace
+from unittest.mock import patch
 
 from hermes_cli.codex_companion import (
     CodexCompanionWatcher,
@@ -196,3 +197,16 @@ def test_companion_store_loads_latest_saved_artifacts(tmp_path):
 
     assert store.load_latest_event()["event_id"] == "evt2"
     assert store.load_latest_analysis()["analysis"] == "ok"
+
+
+def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsys):
+    watcher = CodexCompanionWatcher(tmp_path, analyze=True, once=True)
+    watcher.store = CompanionStore(root=tmp_path / "store")
+    event = {"event_id": "evt3", "workspace_root": str(tmp_path), "changes": []}
+
+    with patch("hermes_cli.codex_companion.analyze_change_set", return_value={"analysis": "full review body"}):
+        watcher._process_event(event)
+
+    output = capsys.readouterr().out
+    assert "[codex-watch] analysis saved:" in output
+    assert "full review body" not in output

@@ -855,7 +855,6 @@ class CodexCompanionWatcher:
             return
         analysis_path = self.store.save_analysis(event["event_id"], analysis)
         print(f"[codex-watch] analysis saved: {analysis_path}")
-        print(analysis["analysis"])
         if self.on_analysis is not None:
             self.on_analysis(analysis, analysis_path)
 
