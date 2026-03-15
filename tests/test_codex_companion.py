@@ -235,3 +235,20 @@ def test_store_command_output_writes_readable_multiline_json(tmp_path):
     assert payload["command"] == "flow"
     assert payload["content"]["lines"] == ["## 概要", "line one", "line two"]
     assert payload["metadata"]["symbol"] == "forward"
+
+
+def test_store_migrates_legacy_codex_companion_directory(tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    legacy_root = hermes_home / "codex_companion"
+    (legacy_root / "events").mkdir(parents=True)
+    (legacy_root / "outputs").mkdir(parents=True)
+    (legacy_root / "events" / "evt.json").write_text('{"event_id":"evt"}', encoding="utf-8")
+    (legacy_root / "outputs" / "out.json").write_text('{"output_id":"out"}', encoding="utf-8")
+
+    with patch("hermes_cli.codex_companion.get_hermes_home", return_value=hermes_home):
+        store = HermesStore()
+
+    assert store.root == hermes_home / "store"
+    assert (hermes_home / "store" / "events" / "evt.json").exists()
+    assert (hermes_home / "store" / "outputs" / "out.json").exists()
+    assert not legacy_root.exists()

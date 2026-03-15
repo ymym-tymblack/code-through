@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -384,18 +385,34 @@ def detect_changes(
 class HermesStore:
     def __init__(self, root: Optional[Path] = None):
         ensure_hermes_home()
-        default_root = get_hermes_home() / "store"
-        legacy_root = get_hermes_home() / "codex_companion"
         if root is not None:
             self.root = root
-        elif default_root.exists() or not legacy_root.exists():
-            self.root = default_root
         else:
-            self.root = legacy_root
+            hermes_home = get_hermes_home()
+            self.root = hermes_home / "store"
+            self._migrate_legacy_root(legacy_root=hermes_home / "codex_companion", store_root=self.root)
         self.events_dir = self.root / "events"
         self.outputs_dir = self.root / "outputs"
         self.events_dir.mkdir(parents=True, exist_ok=True)
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _migrate_legacy_root(*, legacy_root: Path, store_root: Path) -> None:
+        if store_root.exists() or not legacy_root.exists():
+            return
+        try:
+            shutil.move(str(legacy_root), str(store_root))
+        except Exception:
+            store_root.mkdir(parents=True, exist_ok=True)
+            for child in legacy_root.iterdir():
+                destination = store_root / child.name
+                if destination.exists():
+                    continue
+                shutil.move(str(child), str(destination))
+            try:
+                legacy_root.rmdir()
+            except OSError:
+                pass
 
     def save_event(self, payload: dict) -> Path:
         event_id = payload["event_id"]
