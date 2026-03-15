@@ -507,6 +507,7 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "workspace": getattr(args, "workspace", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -2319,6 +2320,11 @@ For more help on a command:
         default=False,
         help="Include the session ID in the agent's system prompt"
     )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Target workspace directory to edit/review instead of the current directory"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -2395,6 +2401,11 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Include the session ID in the agent's system prompt"
+    )
+    chat_parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Target workspace directory to edit/review instead of the current directory"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -3210,6 +3221,8 @@ For more help on a command:
         args.verbose = False
         if not hasattr(args, "worktree"):
             args.worktree = False
+        if not hasattr(args, "workspace"):
+            args.workspace = None
         cmd_chat(args)
         return
     
@@ -3224,6 +3237,8 @@ For more help on a command:
         args.continue_last = None
         if not hasattr(args, "worktree"):
             args.worktree = False
+        if not hasattr(args, "workspace"):
+            args.workspace = None
         cmd_chat(args)
         return
     

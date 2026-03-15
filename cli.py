@@ -1258,6 +1258,7 @@ class HermesCLI:
         self._providers_order = pr.get("order")
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
+        self.workspace_root = Path(os.getenv("TERMINAL_CWD", os.getcwd())).resolve()
         
         # Fallback model config — tried when primary provider fails after retries
         fb = CLI_CONFIG.get("fallback_model") or {}
@@ -2827,7 +2828,7 @@ class HermesCLI:
         from hermes_cli.codex_companion import CodexCompanionWatcher
 
         self._review_stop_event = threading.Event()
-        workspace_root = Path(os.getcwd()).resolve()
+        workspace_root = self.workspace_root
         review_cfg = CLI_CONFIG.get("review", {}) or {}
 
         def _on_event(event: dict, _path: Path) -> None:
@@ -2924,7 +2925,7 @@ class HermesCLI:
             _cprint("  Usage: /explain <path>")
             return
         target_path = parts[1].strip()
-        workspace_root = Path(os.getcwd()).resolve()
+        workspace_root = self.workspace_root
         target_file = (workspace_root / target_path).resolve()
         if not target_file.exists() or not target_file.is_file():
             _cprint(f"  (>_<) File not found: {target_path}")
@@ -2942,7 +2943,7 @@ class HermesCLI:
             return
         symbol = parts[1].strip()
         explicit_path = parts[2].strip() if len(parts) > 2 else ""
-        workspace_root = Path(os.getcwd()).resolve()
+        workspace_root = self.workspace_root
         from hermes_cli.codex_companion import (
             build_file_explanation_prompt,
             collect_related_context,
@@ -6019,6 +6020,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    workspace: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -6039,6 +6041,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        workspace: Target workspace directory for editing/review
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -6048,6 +6051,7 @@ def main(
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
+        python cli.py --workspace /tmp/project   # Work on another directory
     """
     global _active_worktree
 
@@ -6086,7 +6090,18 @@ def main(
                 return
     else:
         wt_info = None
-    
+
+    if workspace:
+        workspace_path = Path(workspace).expanduser().resolve()
+        if not workspace_path.exists():
+            print(f"Workspace not found: {workspace_path}")
+            return
+        if not workspace_path.is_dir():
+            print(f"Workspace is not a directory: {workspace_path}")
+            return
+        os.environ["TERMINAL_CWD"] = str(workspace_path)
+        os.chdir(workspace_path)
+
     # Handle query shorthand
     query = query or q
     

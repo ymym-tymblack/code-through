@@ -152,3 +152,9 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestWorkspaceResolution:
+    def test_workspace_root_prefers_terminal_cwd(self, tmp_path):
+        cli = _make_cli(env_overrides={"TERMINAL_CWD": str(tmp_path)})
+        assert cli.workspace_root == tmp_path.resolve()
