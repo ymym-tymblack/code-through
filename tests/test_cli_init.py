@@ -105,6 +105,10 @@ class TestSingleQueryState:
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
 
+    def test_review_store_enabled_by_default(self):
+        cli = _make_cli()
+        assert cli._review_enabled is True
+
 
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):

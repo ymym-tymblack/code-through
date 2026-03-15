@@ -204,7 +204,7 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "review": {
-            "enabled": False,
+            "enabled": True,
             "poll_interval": 1.0,
             "debounce_seconds": 2.0,
             "max_file_bytes": 200_000,
@@ -1338,7 +1338,7 @@ class HermesCLI:
         self._review_watcher = None
         self._review_thread: Optional[threading.Thread] = None
         self._review_stop_event = threading.Event()
-        self._review_enabled = bool(CLI_CONFIG.get("review", {}).get("enabled", False))
+        self._review_enabled = bool(CLI_CONFIG.get("review", {}).get("enabled", True))
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
 
