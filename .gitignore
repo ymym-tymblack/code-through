@@ -53,3 +53,7 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+
+# Local-only files
+342a5d3e4f414361874840859dfa719b.json
+nanochat/
