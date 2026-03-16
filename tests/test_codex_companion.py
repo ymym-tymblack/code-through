@@ -7,6 +7,8 @@ from hermes_cli.codex_companion import (
     HermesStore,
     PendingChange,
     build_diff_text,
+    build_directory_explanation_prompt,
+    build_file_explanation_prompt,
     collect_related_context,
     collect_workspace_snapshot,
     detect_changes,
@@ -190,6 +192,35 @@ def test_collect_related_context_follows_python_imports(tmp_path):
     assert related
     assert related[0]["path"] == "pkg/helper.py"
     assert "def helper" in related[0]["content"]
+
+
+def test_build_file_explanation_prompt_defaults_to_english(tmp_path):
+    prompt = build_file_explanation_prompt(tmp_path, target_path="src/app.py")
+
+    assert "You are explaining source code to a developer in English." in prompt
+    assert "Return exactly these sections in English:" in prompt
+    assert "## Overview" in prompt
+    assert "## Key Functions and Responsibilities" in prompt
+    assert "## Control Flow" in prompt
+    assert "## Improvement Opportunities" in prompt
+    assert "## 概要" not in prompt
+
+
+def test_build_directory_explanation_prompt_supports_japanese(tmp_path):
+    prompt = build_directory_explanation_prompt(
+        tmp_path,
+        target_path="src",
+        directory_context={"entries": [], "total_entries": 0},
+        natural_language="ja",
+    )
+
+    assert "You are explaining a source directory to a developer in Japanese." in prompt
+    assert "Return exactly these sections in Japanese:" in prompt
+    assert "## 概要" in prompt
+    assert "## 主要なファイルと責務" in prompt
+    assert "## 処理フロー" in prompt
+    assert "## 改善ポイント" in prompt
+    assert "## Overview" not in prompt
 
 
 def test_companion_store_loads_latest_saved_artifacts(tmp_path):

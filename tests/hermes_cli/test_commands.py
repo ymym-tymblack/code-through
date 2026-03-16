@@ -13,7 +13,7 @@ EXPECTED_COMMANDS = {
     "/help", "/tools", "/toolsets", "/model", "/provider", "/prompt",
     "/personality", "/clear", "/history", "/new", "/reset", "/retry",
     "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
-    "/verbose", "/reasoning", "/compress", "/title", "/usage", "/insights", "/paste",
+    "/verbose", "/reasoning", "/language", "/compress", "/title", "/usage", "/insights", "/paste",
     "/reload-mcp", "/rollback", "/background", "/review", "/explain", "/flow",
     "/skin", "/voice", "/quit",
 }
@@ -161,6 +161,12 @@ class TestSlashCommandCompleter:
 
         assert [item.text for item in completions] == ["show"]
         assert completions[0].display_meta_text == "Show model reasoning in output"
+
+    def test_language_command_suggests_supported_languages(self):
+        completions = _completions(SlashCommandCompleter(), "/language j")
+
+        assert [item.text for item in completions] == ["ja"]
+        assert completions[0].display_meta_text == "Japanese natural-language output"
 
     def test_exact_option_match_adds_trailing_space(self):
         completions = _completions(SlashCommandCompleter(), "/voice tts")

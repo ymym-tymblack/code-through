@@ -118,13 +118,15 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
     
     Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
-    Returns None to use the default (medium), or a config dict to override.
+    Returns None to indicate the default behavior (medium) when unset/empty.
     """
-    if not effort or not effort.strip():
+    effort = (effort or "").strip().lower()
+    if not effort:
         return None
-    effort = effort.strip().lower()
     if effort == "none":
         return {"enabled": False}
+    if effort == "minimal":  # alias
+        effort = "low"
     valid = ("xhigh", "high", "medium", "low", "minimal")
     if effort in valid:
         return {"enabled": True, "effort": effort}
@@ -132,14 +134,40 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return None
 
 
+_SUPPORTED_NATURAL_LANGUAGES = {
+    "en": "English",
+    "english": "English",
+    "ja": "Japanese",
+    "jp": "Japanese",
+    "japanese": "Japanese",
+}
+
+
+def _normalize_natural_language(language: str | None) -> str:
+    value = (language or "").strip().lower()
+    if not value:
+        return "en"
+    normalized = {
+        "english": "en",
+        "jp": "ja",
+        "japanese": "ja",
+    }.get(value, value)
+    return normalized if normalized in {"en", "ja"} else "en"
+
+
+def _natural_language_label(language: str) -> str:
+    normalized = _normalize_natural_language(language)
+    return "Japanese" if normalized == "ja" else "English"
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
-    
+
     Config lookup order:
     1. ~/.hermes/config.yaml (user config - preferred)
     2. ./cli-config.yaml (project config - fallback)
-    
+
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
     """
@@ -208,6 +236,7 @@ def load_cli_config() -> Dict[str, Any]:
             "poll_interval": 1.0,
             "debounce_seconds": 2.0,
             "max_file_bytes": 200_000,
+            "natural_language": "en",
         },
         "toolsets": ["all"],
         "display": {
@@ -1248,6 +1277,9 @@ class HermesCLI:
         # Reasoning config (OpenRouter reasoning effort level)
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
+        self.review_natural_language = _normalize_natural_language(
+            CLI_CONFIG.get("review", {}).get("natural_language", "en")
         )
         
         # OpenRouter provider routing preferences
@@ -2886,6 +2918,7 @@ class HermesCLI:
                 "provider": self.provider,
                 "api_mode": self.api_mode,
             },
+            natural_language=self.review_natural_language,
             on_event=_on_event,
             on_analysis=_on_analysis,
             stop_event=self._review_stop_event,
@@ -3007,6 +3040,7 @@ class HermesCLI:
                 workspace_root,
                 target_path=rel_path,
                 directory_context=directory_context,
+                natural_language=self.review_natural_language,
             )
             self._run_review_prompt(
                 prompt,
@@ -3026,7 +3060,12 @@ class HermesCLI:
         except ValueError:
             rel_path = target_path
         related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
-        prompt = build_file_explanation_prompt(workspace_root, target_path=rel_path, related_files=related)
+        prompt = build_file_explanation_prompt(
+            workspace_root,
+            target_path=rel_path,
+            related_files=related,
+            natural_language=self.review_natural_language,
+        )
         self._run_review_prompt(
             prompt,
             title="File Explain",
@@ -3062,6 +3101,7 @@ class HermesCLI:
             target_path=target_path,
             symbol=symbol,
             related_files=related,
+            natural_language=self.review_natural_language,
         )
         self._run_review_prompt(
             prompt,
@@ -3376,6 +3416,8 @@ class HermesCLI:
             self._toggle_verbose()
         elif cmd_lower.startswith("/reasoning"):
             self._handle_reasoning_command(cmd_original)
+        elif cmd_lower.startswith("/language"):
+            self._handle_language_command(cmd_original)
         elif cmd_lower == "/compress":
             self._manual_compress()
         elif cmd_lower == "/usage":
@@ -3679,6 +3721,30 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_language_command(self, cmd: str) -> None:
+        """Handle /language [en|ja] — set natural-language output for explain/review commands."""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            current = _normalize_natural_language(getattr(self, "review_natural_language", "en"))
+            label = _natural_language_label(current)
+            print(f"  Natural-language output: {label} ({current})")
+            print("  Usage: /language <en|ja>")
+            return
+
+        requested = parts[1].strip()
+        normalized = _normalize_natural_language(requested)
+        if requested.strip().lower() not in _SUPPORTED_NATURAL_LANGUAGES and normalized != requested.strip().lower():
+            print(f"  Unknown language: {requested}")
+            print("  Available: en, ja")
+            return
+
+        self.review_natural_language = normalized
+        label = _natural_language_label(normalized)
+        if save_config_value("review.natural_language", normalized):
+            print(f"  Natural-language output set to: {label} ({normalized}) (saved)")
+        else:
+            print(f"  Natural-language output set to: {label} ({normalized})")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

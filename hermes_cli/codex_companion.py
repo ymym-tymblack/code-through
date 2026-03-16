@@ -76,6 +76,74 @@ DEFAULT_MAX_RELATED_CHARS = 16_000
 DEFAULT_SYMBOL_MATCHES = 5
 STORE_SCHEMA_VERSION = 2
 
+_LANGUAGE_SPECS = {
+    "en": {
+        "name": "English",
+        "file_sections": [
+            "## Overview",
+            "## Key Functions and Responsibilities",
+            "## Control Flow",
+            "## Improvement Opportunities",
+        ],
+        "directory_sections": [
+            "## Overview",
+            "## Key Files and Responsibilities",
+            "## Control Flow",
+            "## Improvement Opportunities",
+        ],
+        "review_sections": [
+            "## Change Summary",
+            "## Control Flow",
+            "## Risks",
+            "## Improvement Suggestions",
+        ],
+        "review_guidance": {
+            "summary": "In Change Summary, describe processing flow, major functions, and responsibility changes.",
+            "flow": "In Control Flow, explain the call flow and data flow in the changed code.",
+            "risks": "In Risks, call out likely bugs, regressions, and missing edge cases.",
+            "improvements": "In Improvement Suggestions, suggest concrete follow-up improvements or tests.",
+        },
+    },
+    "ja": {
+        "name": "Japanese",
+        "file_sections": [
+            "## 概要",
+            "## 主要な関数と責務",
+            "## 処理フロー",
+            "## 改善ポイント",
+        ],
+        "directory_sections": [
+            "## 概要",
+            "## 主要なファイルと責務",
+            "## 処理フロー",
+            "## 改善ポイント",
+        ],
+        "review_sections": [
+            "## 変更説明",
+            "## 処理フロー",
+            "## リスク",
+            "## 改善提案",
+        ],
+        "review_guidance": {
+            "summary": "In 変更説明, describe processing flow, major functions, and responsibility changes.",
+            "flow": "In 処理フロー, explain the call flow and data flow in the changed code.",
+            "risks": "In リスク, call out likely bugs, regressions, and missing edge cases.",
+            "improvements": "In 改善提案, suggest concrete follow-up improvements or tests.",
+        },
+    },
+}
+
+
+def _normalize_natural_language(language: Optional[str]) -> str:
+    value = (language or "").strip().lower()
+    aliases = {"english": "en", "jp": "ja", "japanese": "ja"}
+    normalized = aliases.get(value, value)
+    return normalized if normalized in _LANGUAGE_SPECS else "en"
+
+
+def _language_spec(language: Optional[str]) -> dict[str, Any]:
+    return _LANGUAGE_SPECS[_normalize_natural_language(language)]
+
 
 @dataclass(frozen=True)
 class FileSnapshot:
@@ -572,23 +640,22 @@ def _default_analysis_model() -> str:
     return "anthropic/claude-opus-4.6"
 
 
-def _build_analysis_prompt(event: dict) -> str:
+def _build_analysis_prompt(event: dict, *, natural_language: Optional[str] = None) -> str:
     event = _prune_event(event)
+    spec = _language_spec(natural_language)
+    guidance = spec["review_guidance"]
     lines = [
-        "You are reviewing a code change-set produced by a coding agent.",
+        f"You are reviewing a code change-set produced by a coding agent for a developer in {spec['name']}.",
         "Use the diff as the primary evidence. Only infer intent when strongly supported.",
         "If you need extra context, you may read the changed files and related files, but stay focused.",
         "",
-        "Return exactly these sections in Japanese:",
-        "## 変更説明",
-        "## 処理フロー",
-        "## リスク",
-        "## 改善提案",
+        f"Return exactly these sections in {spec['name']}:",
+        *spec["review_sections"],
         "",
-        "In 変更説明, describe processing flow, major functions, and responsibility changes.",
-        "In 処理フロー, explain the call flow and data flow in the changed code.",
-        "In リスク, call out likely bugs, regressions, and missing edge cases.",
-        "In 改善提案, suggest concrete follow-up improvements or tests.",
+        guidance["summary"],
+        guidance["flow"],
+        guidance["risks"],
+        guidance["improvements"],
         "",
         f"Workspace: {event['workspace_root']}",
         f"Change-set ID: {event['event_id']}",
@@ -616,16 +683,15 @@ def build_file_explanation_prompt(
     target_path: str,
     symbol: Optional[str] = None,
     related_files: Optional[Sequence[dict[str, str]]] = None,
+    natural_language: Optional[str] = None,
 ) -> str:
+    spec = _language_spec(natural_language)
     lines = [
-        "You are explaining source code to a developer in Japanese.",
+        f"You are explaining source code to a developer in {spec['name']}.",
         "Prefer direct evidence from the target file. Read additional files only if necessary.",
         "",
-        "Return exactly these sections in Japanese:",
-        "## 概要",
-        "## 主要な関数と責務",
-        "## 処理フロー",
-        "## 改善ポイント",
+        f"Return exactly these sections in {spec['name']}:",
+        *spec["file_sections"],
         "",
         f"Workspace: {workspace_root}",
         f"Target file: {target_path}",
@@ -721,16 +787,15 @@ def build_directory_explanation_prompt(
     *,
     target_path: str,
     directory_context: dict[str, Any],
+    natural_language: Optional[str] = None,
 ) -> str:
+    spec = _language_spec(natural_language)
     lines = [
-        "You are explaining a source directory to a developer in Japanese.",
+        f"You are explaining a source directory to a developer in {spec['name']}.",
         "Prefer direct evidence from the listed files. Stay focused on architecture, call flow, and responsibilities.",
         "",
-        "Return exactly these sections in Japanese:",
-        "## 概要",
-        "## 主要なファイルと責務",
-        "## 処理フロー",
-        "## 改善ポイント",
+        f"Return exactly these sections in {spec['name']}:",
+        *spec["directory_sections"],
         "",
         f"Workspace: {workspace_root}",
         f"Target directory: {target_path}",
@@ -818,6 +883,7 @@ def analyze_change_set(
     *,
     model: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
+    natural_language: Optional[str] = None,
 ) -> dict:
     event = dict(event)
     root = Path(event["workspace_root"])
@@ -827,7 +893,7 @@ def analyze_change_set(
         changed_paths=[str(change["path"]) for change in event.get("changes", [])],
         snapshots=snapshots,
     )
-    prompt = _build_analysis_prompt(event)
+    prompt = _build_analysis_prompt(event, natural_language=natural_language)
     result = analyze_prompt(
         prompt,
         model=model,
@@ -851,6 +917,7 @@ def explain_file(
     symbol: Optional[str] = None,
     model: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
+    natural_language: Optional[str] = None,
 ) -> dict:
     related = collect_related_context(
         workspace_root,
@@ -863,6 +930,7 @@ def explain_file(
         target_path=target_path,
         symbol=symbol,
         related_files=related,
+        natural_language=natural_language,
     )
     result = analyze_prompt(
         prompt,
@@ -885,6 +953,7 @@ class CodexCompanionWatcher:
         once: bool = False,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         runtime: Optional[dict[str, Any]] = None,
+        natural_language: Optional[str] = None,
         on_event: Optional[Callable[[dict, Path], None]] = None,
         on_analysis: Optional[Callable[[dict, Path], None]] = None,
         stop_event: Optional[threading.Event] = None,
@@ -896,6 +965,7 @@ class CodexCompanionWatcher:
         self.once = once
         self.max_file_bytes = max_file_bytes
         self.runtime = runtime
+        self.natural_language = _normalize_natural_language(natural_language)
         self.on_event = on_event
         self.on_analysis = on_analysis
         self.stop_event = stop_event or threading.Event()
@@ -964,7 +1034,11 @@ class CodexCompanionWatcher:
         if not self.analyze:
             return
         try:
-            analysis = analyze_change_set(event, runtime=self.runtime)
+            analysis = analyze_change_set(
+                event,
+                runtime=self.runtime,
+                natural_language=self.natural_language,
+            )
         except Exception as exc:
             error_payload = {
                 "event_id": event["event_id"],

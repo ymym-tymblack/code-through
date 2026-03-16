@@ -40,6 +40,7 @@ COMMANDS_BY_CATEGORY = {
         "/personality": "Set a predefined personality",
         "/verbose": "Cycle tool progress display: off → new → all → verbose",
         "/reasoning": "Manage reasoning effort and display (usage: /reasoning [level|show|hide])",
+        "/language": "Show or change the natural-language output for explain/review commands",
         "/skin": "Show or change the display skin/theme",
         "/voice": "Toggle voice mode (Ctrl+B to record). Usage: /voice [on|off|tts|status]",
     },
@@ -100,6 +101,10 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("off", "Disable voice mode"),
         ("tts", "Toggle text-to-speech playback"),
         ("status", "Show voice mode status"),
+    ),
+    "/language": (
+        ("en", "English natural-language output"),
+        ("ja", "Japanese natural-language output"),
     ),
     "/prompt": (
         ("clear", "Remove the custom system prompt"),

@@ -210,6 +210,10 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
+
+    "review": {
+        "natural_language": "en",
+    },
     
     "human_delay": {
         "mode": "off",
