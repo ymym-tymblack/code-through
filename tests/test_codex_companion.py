@@ -12,6 +12,7 @@ from hermes_cli.codex_companion import (
     collect_related_context,
     collect_workspace_snapshot,
     detect_changes,
+    extract_promotion_candidates,
     run_codex_watch,
 )
 
@@ -223,6 +224,32 @@ def test_build_directory_explanation_prompt_supports_japanese(tmp_path):
     assert "## Overview" not in prompt
 
 
+def test_extract_promotion_candidates_prefers_skill_for_test_workflows():
+    analysis = """## Change Summary
+Updated the retry path.
+
+## Control Flow
+The retry path now preserves the previous user message.
+
+## Risks
+- Watch for duplicate retries if the queue is already populated.
+
+## Improvement Suggestions
+- Add a regression test covering queued retry behavior after a slash command.
+"""
+
+    candidates = extract_promotion_candidates(
+        analysis,
+        command_name="review",
+        metadata={"target_path": "cli.py"},
+    )
+
+    assert len(candidates) >= 2
+    assert candidates[0]["source_paths"] == ["cli.py"]
+    assert any(candidate["suggested_target"] == "skill" for candidate in candidates)
+    assert any("regression test" in candidate["summary"].lower() for candidate in candidates)
+
+
 def test_companion_store_loads_latest_saved_artifacts(tmp_path):
     store = HermesStore(root=tmp_path / "store")
     event = {"event_id": "evt2", "changes": [{"path": "demo.py"}]}
@@ -240,12 +267,17 @@ def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsy
     watcher.store = HermesStore(root=tmp_path / "store")
     event = {"event_id": "evt3", "workspace_root": str(tmp_path), "changes": []}
 
-    with patch("hermes_cli.codex_companion.analyze_change_set", return_value={"analysis": "full review body"}):
+    with patch(
+        "hermes_cli.codex_companion.analyze_change_set",
+        return_value={"analysis": "full review body", "promotion_candidates": [{"summary": "save me"}]},
+    ):
         watcher._process_event(event)
 
     output = capsys.readouterr().out
     assert "[store] output saved:" in output
     assert "full review body" not in output
+    payload = watcher.store.load_latest_output(command="review", title="Diff Review")
+    assert payload["metadata"]["promotion_candidates"] == [{"summary": "save me"}]
 
 
 def test_store_command_output_writes_readable_multiline_json(tmp_path):

@@ -74,7 +74,7 @@ DEFAULT_MAX_DIFF_CHARS = 12_000
 DEFAULT_MAX_RELATED_FILES = 6
 DEFAULT_MAX_RELATED_CHARS = 16_000
 DEFAULT_SYMBOL_MATCHES = 5
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
 
 _LANGUAGE_SPECS = {
     "en": {
@@ -216,6 +216,148 @@ def _truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n...[truncated]..."
+
+
+def _split_markdown_sections(text: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current = ""
+    sections[current] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            current = line.strip()
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+    return {
+        key: "\n".join(lines).strip()
+        for key, lines in sections.items()
+    }
+
+
+def _iter_candidate_lines(section_text: str) -> list[str]:
+    candidates: list[str] = []
+    for raw_line in section_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("### ", "## ")):
+            continue
+        if re.match(r"^[-*]\s+", line):
+            line = re.sub(r"^[-*]\s+", "", line).strip()
+        elif re.match(r"^\d+\.\s+", line):
+            line = re.sub(r"^\d+\.\s+", "", line).strip()
+        elif len(line) < 40:
+            continue
+        candidates.append(line)
+    return candidates
+
+
+def _candidate_target(line: str) -> tuple[str, str, float]:
+    normalized = line.lower()
+    skill_markers = (
+        "workflow", "playbook", "checklist", "step", "steps", "procedure",
+        "template", "pattern", "test", "verification", "guard", "automation",
+        "runbook", "repeatable",
+    )
+    memory_markers = (
+        "avoid", "be careful", "watch for", "pitfall", "risk", "remember",
+        "convention", "assumption", "invariant", "regression",
+    )
+    if any(marker in normalized for marker in skill_markers):
+        return "skill", "skill", 0.84
+    if any(marker in normalized for marker in memory_markers):
+        return "memory", "memory", 0.78
+    return "memory", "memory", 0.68
+
+
+def _candidate_title(command_name: str, target: str, summary: str) -> str:
+    prefix = {
+        "review": "Diff review",
+        "explain": "Explain",
+        "flow": "Flow",
+    }.get(command_name, "Analysis")
+    noun = "workflow" if target == "skill" else "note"
+    words = re.sub(r"\s+", " ", summary).strip().split(" ")
+    return f"{prefix} {noun}: {' '.join(words[:6]).strip()}"
+
+
+def extract_promotion_candidates(
+    analysis_text: str,
+    *,
+    command_name: str,
+    metadata: Optional[dict[str, Any]] = None,
+    natural_language: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    if not analysis_text.strip():
+        return []
+
+    spec = _language_spec(natural_language)
+    sections = _split_markdown_sections(analysis_text)
+    relevant_sections: list[tuple[str, str]] = []
+
+    if command_name == "review":
+        relevant_sections.extend(
+            [
+                (spec["review_sections"][2], "risk"),
+                (spec["review_sections"][3], "improvement"),
+            ]
+        )
+    else:
+        relevant_sections.append((spec["file_sections"][3], "improvement"))
+        relevant_sections.append((spec["directory_sections"][3], "improvement"))
+
+    source_paths = []
+    if metadata:
+        if metadata.get("target_path"):
+            source_paths.append(str(metadata["target_path"]))
+        for item in metadata.get("related_files", []) or []:
+            path = item.get("path")
+            if path and path not in source_paths:
+                source_paths.append(path)
+
+    seen: set[tuple[str, str]] = set()
+    candidates: list[dict[str, Any]] = []
+    for section_name, section_kind in relevant_sections:
+        section_text = sections.get(section_name, "")
+        for line in _iter_candidate_lines(section_text):
+            candidate_type, suggested_target, confidence = _candidate_target(line)
+            normalized = re.sub(r"\W+", " ", line.lower()).strip()
+            dedupe_key = (candidate_type, normalized)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidates.append(
+                {
+                    "type": candidate_type,
+                    "title": _candidate_title(command_name, candidate_type, line),
+                    "summary": line[:280],
+                    "confidence": confidence,
+                    "source_paths": source_paths[:6],
+                    "suggested_target": suggested_target,
+                    "source_command": command_name,
+                    "section": section_kind,
+                }
+            )
+
+    if candidates:
+        return candidates[:5]
+
+    fallback_lines = _iter_candidate_lines(analysis_text)
+    for line in fallback_lines:
+        if "should" not in line.lower() and "consider" not in line.lower():
+            continue
+        candidate_type, suggested_target, confidence = _candidate_target(line)
+        return [{
+            "type": candidate_type,
+            "title": _candidate_title(command_name, candidate_type, line),
+            "summary": line[:280],
+            "confidence": max(0.65, confidence - 0.08),
+            "source_paths": source_paths[:6],
+            "suggested_target": suggested_target,
+            "source_command": command_name,
+            "section": "fallback",
+        }]
+    return []
 
 
 def _read_workspace_file(root: Path, rel_path: str, *, max_file_bytes: int) -> Optional[str]:
@@ -587,6 +729,8 @@ class HermesStore:
             result["provider"] = metadata["provider"]
         if "model" in metadata:
             result["model"] = metadata["model"]
+        if "promotion_candidates" in metadata:
+            result["promotion_candidates"] = metadata["promotion_candidates"]
         return result
 
     def load_latest_event(self) -> Optional[dict]:
@@ -900,6 +1044,12 @@ def analyze_change_set(
         session_id=f"store-{event['event_id']}",
         runtime=runtime,
     )
+    promotion_candidates = extract_promotion_candidates(
+        result.get("analysis", ""),
+        command_name="review",
+        metadata={"related_files": event["related_files"]},
+        natural_language=natural_language,
+    )
     return {
         "event_id": event["event_id"],
         "model": model or _default_analysis_model(),
@@ -907,6 +1057,7 @@ def analyze_change_set(
         "analysis": result.get("analysis", ""),
         "timestamp": result.get("timestamp", time.time()),
         "related_files": event["related_files"],
+        "promotion_candidates": promotion_candidates,
     }
 
 
@@ -1074,6 +1225,7 @@ class CodexCompanionWatcher:
                 "provider": analysis.get("provider"),
                 "model": analysis.get("model"),
                 "related_files": analysis.get("related_files", []),
+                "promotion_candidates": analysis.get("promotion_candidates", []),
             },
             output_id=event["event_id"],
         )
@@ -1190,6 +1342,7 @@ __all__ = [
     "collect_related_context",
     "detect_changes",
     "explain_file",
+    "extract_promotion_candidates",
     "find_symbol_candidates",
     "run_codex_watch",
 ]

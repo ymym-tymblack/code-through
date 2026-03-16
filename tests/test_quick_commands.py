@@ -103,6 +103,12 @@ class TestCLIQuickCommands:
         cli.process_command("/flow run")
         cli._handle_flow_command.assert_called_once_with("/flow run")
 
+    def test_promote_command_dispatches_to_handler(self):
+        cli = self._make_cli({})
+        cli._handle_promote_command = MagicMock()
+        cli.process_command("/promote last")
+        cli._handle_promote_command.assert_called_once_with("/promote last")
+
     def test_explain_command_handles_file_path(self, tmp_path):
         from cli import HermesCLI
 
@@ -138,6 +144,41 @@ class TestCLIQuickCommands:
         kwargs = cli._run_review_prompt.call_args.kwargs
         assert kwargs["title"] == "Directory Explain"
         assert kwargs["subtitle"] == "pkg"
+
+    def test_promote_command_queues_followup_prompt(self):
+        from cli import HermesCLI
+
+        payload = {
+            "command": "review",
+            "title": "Diff Review",
+            "subtitle": "cli.py",
+            "content": {"text": "## Improvement Suggestions\n- Add a regression test for retry flow."},
+            "metadata": {
+                "promotion_candidates": [
+                    {
+                        "title": "Diff review workflow: Add a regression",
+                        "summary": "Add a regression test for retry flow.",
+                        "confidence": 0.84,
+                        "source_paths": ["cli.py"],
+                        "suggested_target": "skill",
+                        "type": "skill",
+                    }
+                ]
+            },
+        }
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_input = MagicMock()
+        cli.console = MagicMock()
+
+        with patch("hermes_cli.codex_companion.HermesStore") as store_cls:
+            store_cls.return_value.load_latest_output.return_value = payload
+            cli._handle_promote_command("/promote review")
+
+        cli._pending_input.put.assert_called_once()
+        queued_prompt = cli._pending_input.put.call_args[0][0]
+        assert "Create a new reusable Hermes skill" in queued_prompt
+        assert "Add a regression test for retry flow." in queued_prompt
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────

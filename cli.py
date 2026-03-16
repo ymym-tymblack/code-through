@@ -1282,6 +1282,9 @@ class HermesCLI:
         self.review_natural_language = _normalize_natural_language(
             CLI_CONFIG.get("review", {}).get("natural_language", "en")
         )
+        self.review_promotion_mode = str(
+            CLI_CONFIG.get("review", {}).get("promotion_mode", "semi_auto")
+        ).strip().lower()
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -2880,6 +2883,164 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _extract_promotion_candidates(
+        self,
+        *,
+        command_name: str,
+        body: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> list[dict[str, Any]]:
+        review_mode = str(getattr(self, "review_promotion_mode", "semi_auto") or "semi_auto").lower()
+        if review_mode == "off":
+            return []
+        try:
+            from hermes_cli.codex_companion import extract_promotion_candidates
+
+            return extract_promotion_candidates(
+                body,
+                command_name=command_name,
+                metadata=metadata,
+                natural_language=getattr(self, "review_natural_language", "en"),
+            )
+        except Exception:
+            return []
+
+    def _show_promotion_hint(self, candidates: list[dict[str, Any]]) -> None:
+        if not candidates:
+            return
+        memory_count = sum(1 for item in candidates if item.get("suggested_target") == "memory")
+        skill_count = sum(1 for item in candidates if item.get("suggested_target") == "skill")
+        parts = []
+        if memory_count:
+            parts.append(f"{memory_count} memory")
+        if skill_count:
+            parts.append(f"{skill_count} skill")
+        summary = ", ".join(parts) if parts else f"{len(candidates)} candidate(s)"
+        _cprint(f"  Promotion candidates: {summary}. Use /promote last to review them.")
+
+    @staticmethod
+    def _build_promotion_prompt(
+        *,
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        target: str,
+    ) -> str:
+        source_label = payload.get("command", "analysis")
+        title = payload.get("title", source_label)
+        subtitle = payload.get("subtitle", "")
+        analysis_text = payload.get("content", {}).get("text", "")
+        source_paths = ", ".join(candidate.get("source_paths", []) or []) or "(none recorded)"
+        if target == "skill":
+            return (
+                "Create a new reusable Hermes skill from the analysis below.\n\n"
+                "Use skill_manage(action='create', ...) to save it under a sensible category.\n"
+                "The skill should be specific, concise, and include trigger conditions, exact steps, pitfalls, and verification.\n"
+                "Do not edit repository files for this task.\n\n"
+                f"Source command: {source_label}\n"
+                f"Title: {title}\n"
+                f"Subtitle: {subtitle}\n"
+                f"Candidate summary: {candidate.get('summary', '')}\n"
+                f"Source paths: {source_paths}\n"
+                f"Confidence: {candidate.get('confidence', 0)}\n\n"
+                "Analysis:\n"
+                f"{analysis_text}\n"
+            )
+        return (
+            "Save one concise persistent memory entry based on the analysis below.\n\n"
+            "Use the memory tool with target='memory'. Keep the entry short, stable, and reusable.\n"
+            "Do not edit repository files for this task.\n\n"
+            f"Source command: {source_label}\n"
+            f"Title: {title}\n"
+            f"Subtitle: {subtitle}\n"
+            f"Candidate summary: {candidate.get('summary', '')}\n"
+            f"Source paths: {source_paths}\n"
+            f"Confidence: {candidate.get('confidence', 0)}\n\n"
+            "Analysis:\n"
+            f"{analysis_text}\n"
+        )
+
+    def _queue_promotion_from_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        target: Optional[str] = None,
+        index: int = 1,
+    ) -> None:
+        metadata = payload.get("metadata", {}) or {}
+        candidates = metadata.get("promotion_candidates") or []
+        if not candidates:
+            _cprint("  No promotion candidates are available for that analysis.")
+            return
+
+        selected = candidates
+        if target in {"memory", "skill"}:
+            selected = [item for item in candidates if item.get("suggested_target") == target]
+            if not selected:
+                _cprint(f"  No {target} candidates were found for that analysis.")
+                return
+        chosen_index = max(1, index) - 1
+        if chosen_index >= len(selected):
+            _cprint(f"  Candidate index out of range. Available: 1-{len(selected)}")
+            return
+
+        candidate = selected[chosen_index]
+        effective_target = target or candidate.get("suggested_target") or "memory"
+        _cprint(
+            f"  [{chosen_index + 1}] {candidate.get('title', 'candidate')} -> {effective_target} "
+            f"(confidence {candidate.get('confidence', 0):.2f})"
+        )
+        _cprint(f"      {candidate.get('summary', '')}")
+        if not hasattr(self, "_pending_input"):
+            _cprint("  No active input queue is available. Start the interactive loop and retry /promote.")
+            return
+        prompt = self._build_promotion_prompt(
+            candidate=candidate,
+            payload=payload,
+            target=effective_target,
+        )
+        self._pending_input.put(prompt)
+        _cprint(f"  Queued a follow-up prompt to save this analysis as {effective_target}.")
+
+    def _handle_promote_command(self, cmd: str) -> None:
+        tokens = cmd.strip().split()
+        source_alias = "last"
+        target = None
+        index = 1
+
+        for token in tokens[1:]:
+            lowered = token.lower().strip()
+            if lowered in {"last", "review", "explain", "flow"}:
+                source_alias = lowered
+            elif lowered in {"memory", "skill"}:
+                target = lowered
+            else:
+                try:
+                    index = int(lowered)
+                except ValueError:
+                    _cprint("  Usage: /promote [last|review|explain|flow] [memory|skill] [index]")
+                    return
+
+        from hermes_cli.codex_companion import HermesStore
+
+        store = HermesStore()
+        payload = None
+        if source_alias == "last":
+            for command_name in ("review", "explain", "flow"):
+                candidate = store.load_latest_output(command=command_name)
+                if not candidate:
+                    continue
+                if payload is None or candidate.get("created_at", 0) > payload.get("created_at", 0):
+                    payload = candidate
+        elif source_alias == "review":
+            payload = store.load_latest_output(command="review", title="Diff Review")
+        else:
+            payload = store.load_latest_output(command=source_alias)
+
+        if not payload:
+            _cprint("  No analysis output found to promote.")
+            return
+        self._queue_promotion_from_payload(payload, target=target, index=index)
+
     def _start_review_watcher(self) -> bool:
         if self._review_thread and self._review_thread.is_alive():
             return True
@@ -2903,6 +3064,7 @@ class HermesCLI:
                 if len((self._review_latest_event or {}).get("changes", [])) > 3:
                     changed += ", ..."
                 self._render_review_panel("Diff Review", payload.get("analysis", ""), subtitle=changed)
+                self._show_promotion_hint(payload.get("promotion_candidates", []) or [])
             else:
                 _cprint(f"  ⚠️  Diff review failed: {payload.get('error', 'unknown error')}")
             if self._app:
@@ -2980,6 +3142,11 @@ class HermesCLI:
                     },
                 )
                 body = result.get("analysis", "")
+                promotion_candidates = self._extract_promotion_candidates(
+                    command_name=command_name,
+                    body=body,
+                    metadata=metadata,
+                )
                 self._store_command_output(
                     command_name=command_name,
                     title=title,
@@ -2989,10 +3156,12 @@ class HermesCLI:
                     metadata={
                         "provider": result.get("provider"),
                         "model": result.get("model"),
+                        "promotion_candidates": promotion_candidates,
                         **(metadata or {}),
                     },
                 )
                 self._render_review_panel(title, body, subtitle=subtitle)
+                self._show_promotion_hint(promotion_candidates)
             except Exception as exc:
                 self._store_command_output(
                     command_name=command_name,
@@ -3027,6 +3196,7 @@ class HermesCLI:
             collect_directory_context,
             collect_related_context,
         )
+        natural_language = getattr(self, "review_natural_language", "en")
 
         if target.is_dir():
             try:
@@ -3041,7 +3211,7 @@ class HermesCLI:
                 workspace_root,
                 target_path=rel_path,
                 directory_context=directory_context,
-                natural_language=self.review_natural_language,
+                natural_language=natural_language,
             )
             self._run_review_prompt(
                 prompt,
@@ -3065,7 +3235,7 @@ class HermesCLI:
             workspace_root,
             target_path=rel_path,
             related_files=related,
-            natural_language=self.review_natural_language,
+            natural_language=natural_language,
         )
         self._run_review_prompt(
             prompt,
@@ -3088,6 +3258,7 @@ class HermesCLI:
             collect_related_context,
             find_symbol_candidates,
         )
+        natural_language = getattr(self, "review_natural_language", "en")
 
         target_path = explicit_path
         if not target_path:
@@ -3102,7 +3273,7 @@ class HermesCLI:
             target_path=target_path,
             symbol=symbol,
             related_files=related,
-            natural_language=self.review_natural_language,
+            natural_language=natural_language,
         )
         self._run_review_prompt(
             prompt,
@@ -3142,6 +3313,7 @@ class HermesCLI:
                 return
             if analysis.get("analysis"):
                 self._render_review_panel("Diff Review", analysis.get("analysis", ""))
+                self._show_promotion_hint(analysis.get("promotion_candidates", []) or [])
             else:
                 _cprint(f"  Last diff review failed: {analysis.get('error', 'unknown error')}")
             return
@@ -3165,8 +3337,13 @@ class HermesCLI:
                 self._pending_input.put(prompt)
                 _cprint("  Queued a follow-up implementation prompt from the latest diff review.")
             return
+        if action == "promote":
+            extra = parts[2].strip() if len(parts) > 2 else ""
+            promote_cmd = f"/promote review {extra}".strip()
+            self._handle_promote_command(promote_cmd)
+            return
 
-        _cprint("  Usage: /review [on|off|status|last|apply]")
+        _cprint("  Usage: /review [on|off|status|last|apply|promote]")
 
     def process_command(self, command: str) -> bool:
         """
@@ -3440,6 +3617,8 @@ class HermesCLI:
             self._handle_explain_command(cmd_original)
         elif cmd_lower.startswith("/flow"):
             self._handle_flow_command(cmd_original)
+        elif cmd_lower.startswith("/promote"):
+            self._handle_promote_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
         elif cmd_lower.startswith("/voice"):

@@ -213,6 +213,7 @@ DEFAULT_CONFIG = {
 
     "review": {
         "natural_language": "en",
+        "promotion_mode": "semi_auto",
     },
     
     "human_delay": {
@@ -277,7 +278,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 7,
+    "_config_version": 8,
 }
 
 # =============================================================================

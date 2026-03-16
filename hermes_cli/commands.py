@@ -28,9 +28,10 @@ COMMANDS_BY_CATEGORY = {
         "/compress": "Manually compress conversation context (flush memories + summarize)",
         "/rollback": "List or restore filesystem checkpoints (usage: /rollback [number])",
         "/background": "Run a prompt in the background (usage: /background <prompt>)",
-        "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply])",
+        "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply|promote])",
         "/explain": "Explain a file in natural language (usage: /explain <path>)",
         "/flow": "Explain a symbol or flow (usage: /flow <symbol> [path])",
+        "/promote": "Queue a memory/skill promotion from the latest analysis (usage: /promote [last|review|explain|flow] [memory|skill] [index])",
     },
     "Configuration": {
         "/config": "Show current configuration",
@@ -83,6 +84,14 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("status", "Show review watcher status"),
         ("last", "Show the latest diff review"),
         ("apply", "Queue an implementation prompt from the latest diff review"),
+    ),
+    "/promote": (
+        ("last", "Use the most recent review/explain/flow output"),
+        ("review", "Use the latest diff review output"),
+        ("explain", "Use the latest explain output"),
+        ("flow", "Use the latest flow output"),
+        ("memory", "Promote into persistent memory"),
+        ("skill", "Promote into a reusable skill"),
     ),
     "/reasoning": (
         ("none", "Disable reasoning effort"),
