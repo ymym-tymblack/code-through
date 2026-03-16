@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _rich_text_from_ansi
+from rich.console import Console
+
+from cli import HermesCLI, _rich_text_from_ansi, build_welcome_banner
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -86,6 +88,27 @@ class TestCliSkinPromptIntegration:
         assert "Skin set to: ares (saved)" in output
         assert "Prompt + TUI colors updated." in output
         assert cli._app.style is not None
+
+
+class TestBannerBrandingIntegration:
+    def test_build_welcome_banner_uses_ex_branding_in_title(self, monkeypatch):
+        set_active_skin("default")
+        console = Console(record=True, width=120)
+
+        monkeypatch.setattr("model_tools.check_tool_availability", lambda quiet=True: ([], []))
+        monkeypatch.setattr("cli._get_available_skills", lambda: {})
+
+        build_welcome_banner(
+            console,
+            model="anthropic/claude-opus-4.1",
+            cwd="/tmp",
+            tools=[],
+            enabled_toolsets=[],
+            session_id=None,
+            context_length=None,
+        )
+
+        assert "HERMES-AGENT-Ex v" in console.export_text()
 
 
 class TestAnsiRichTextHelper:
