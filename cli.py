@@ -822,7 +822,7 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Note: built dynamically by _build_compact_banner() to fit terminal width
 COMPACT_BANNER = """
 [bold #CD7F32]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #CD7F32]║[/]  [#FFD700]⚕ HERMES-AGENT-Ex[/] [dim #B8860B]- AI Agent Framework[/]       [bold #CD7F32]║[/]
+[bold #CD7F32]║[/]  [#FFD700]⚕ HERMES-AGENT Ex[/] [dim #B8860B]- AI Agent Framework[/]       [bold #CD7F32]║[/]
 [bold #CD7F32]║[/]  [#FFBF00]High-contrast terminal UX[/]   [dim #B8860B]Nous Research[/]    [bold #CD7F32]║[/]
 [bold #CD7F32]╚══════════════════════════════════════════════════════════════╝[/]
 """
@@ -832,10 +832,10 @@ def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
     w = min(shutil.get_terminal_size().columns - 2, 64)
     if w < 30:
-        return "\n[#FFD700]⚕ HERMES-AGENT-Ex[/] [dim #B8860B]- Nous Research[/]\n"
+        return "\n[#FFD700]⚕ HERMES-AGENT Ex[/] [dim #B8860B]- Nous Research[/]\n"
     inner = w - 2  # inside the box border
     bar = "═" * w
-    line1 = "⚕ HERMES-AGENT-Ex - AI Agent Framework"
+    line1 = "⚕ HERMES-AGENT Ex - AI Agent Framework"
     line2 = "High-contrast terminal UX  ·  Nous Research"
     # Truncate and pad to fit
     line1 = line1[:inner - 2].ljust(inner - 2)
@@ -931,12 +931,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         _session_c = _bskin.get_color("session_border", "#B8860B")
         _title_c = _bskin.get_color("banner_title", "#CD7F32")
         _border_c = _bskin.get_color("banner_border", "#CD7F32")
-        _agent_name = _bskin.get_branding("agent_name", "HERMES-AGENT-Ex")
+        _agent_name = _bskin.get_branding("agent_name", "HERMES-AGENT Ex")
     except Exception:
         _bskin = None
         _accent, _dim, _text = "#FFD700", "#B8860B", "#FFF8DC"
         _session_c, _title_c, _border_c = "#B8860B", "#CD7F32", "#CD7F32"
-        _agent_name = "HERMES-AGENT-Ex"
+        _agent_name = "HERMES-AGENT Ex"
 
     _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
     left_lines = ["", _hero, ""]
@@ -5016,10 +5016,10 @@ class HermesCLI:
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to HERMES-AGENT-Ex! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to HERMES-AGENT Ex! Type your message or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#E6F1FF")
         except Exception:
-            _welcome_text = "Welcome to HERMES-AGENT-Ex! Type your message or /help for commands."
+            _welcome_text = "Welcome to HERMES-AGENT Ex! Type your message or /help for commands."
             _welcome_color = "#E6F1FF"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()

@@ -47,7 +47,7 @@ class TestSkinConfig:
     def test_get_branding_with_fallback(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
-        assert skin.get_branding("agent_name") == "HERMES-AGENT-Ex"
+        assert skin.get_branding("agent_name") == "HERMES-AGENT Ex"
         assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
     def test_get_spinner_list_empty_for_default(self):
