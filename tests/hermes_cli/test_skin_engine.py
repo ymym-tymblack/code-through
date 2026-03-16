@@ -31,8 +31,18 @@ class TestSkinConfig:
     def test_get_color_with_fallback(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
-        assert skin.get_color("banner_title") == "#7FDBFF"
+        assert skin.get_color("banner_title") == "#CD7F32"
         assert skin.get_color("nonexistent", "#000") == "#000"
+
+    def test_default_skin_uses_inverted_gold_palette(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.get_color("banner_border") == "#CD7F32"
+        assert skin.get_color("banner_title") == "#CD7F32"
+        assert skin.get_color("banner_accent") == "#FFD700"
+        assert skin.get_color("response_border") == "#FFD700"
+        assert skin.get_color("session_label") == "#FFD700"
+        assert skin.get_color("session_border") == "#B8860B"
 
     def test_get_branding_with_fallback(self):
         from hermes_cli.skin_engine import load_skin
@@ -165,7 +175,7 @@ class TestUserSkins:
         assert skin.get_branding("agent_name") == "Custom Agent"
         assert skin.tool_prefix == "▸"
         # Should inherit defaults for unspecified colors
-        assert skin.get_color("banner_border") == "#4DA3FF"  # from default
+        assert skin.get_color("banner_border") == "#CD7F32"  # from default
 
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import list_skins

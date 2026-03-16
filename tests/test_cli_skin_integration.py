@@ -3,7 +3,14 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from cli import HermesCLI, _rich_text_from_ansi, build_welcome_banner
+from cli import (
+    COMPACT_BANNER,
+    HERMES_AGENT_LOGO,
+    HermesCLI,
+    _build_compact_banner,
+    _rich_text_from_ansi,
+    build_welcome_banner,
+)
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -109,6 +116,29 @@ class TestBannerBrandingIntegration:
         )
 
         assert "HERMES-AGENT-Ex v" in console.export_text()
+
+    def test_logo_markup_uses_ex_name_with_inverted_gold_palette(self):
+        assert "HERMES-AGENT-Ex" in HERMES_AGENT_LOGO
+        assert "#CD7F32" in HERMES_AGENT_LOGO
+        assert "#FFD700" in HERMES_AGENT_LOGO
+        assert "#7FDBFF" not in HERMES_AGENT_LOGO
+        assert "#4DA3FF" not in HERMES_AGENT_LOGO
+
+    def test_compact_banner_uses_ex_name_with_inverted_gold_palette(self):
+        assert "HERMES-AGENT-Ex" in COMPACT_BANNER
+        assert "#CD7F32" in COMPACT_BANNER
+        assert "#FFD700" in COMPACT_BANNER
+        assert "#7FDBFF" not in COMPACT_BANNER
+        assert "#4DA3FF" not in COMPACT_BANNER
+
+    def test_dynamic_compact_banner_uses_ex_name_with_inverted_gold_palette(self, monkeypatch):
+        monkeypatch.setattr("shutil.get_terminal_size", lambda *args, **kwargs: SimpleNamespace(columns=80))
+        banner = _build_compact_banner()
+        assert "HERMES-AGENT-Ex" in banner
+        assert "#CD7F32" in banner
+        assert "#FFD700" in banner
+        assert "#7FDBFF" not in banner
+        assert "#4DA3FF" not in banner
 
 
 class TestAnsiRichTextHelper:
