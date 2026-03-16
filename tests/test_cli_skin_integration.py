@@ -118,7 +118,7 @@ class TestBannerBrandingIntegration:
         assert "HERMES-AGENT Ex v" in console.export_text()
 
     def test_logo_markup_uses_ex_name_with_inverted_gold_palette(self):
-        assert "HERMES-AGENT-Ex" in HERMES_AGENT_LOGO
+        assert "HERMES-AGENT Ex" in HERMES_AGENT_LOGO
         assert "███████╗██╗  ██╗" in HERMES_AGENT_LOGO
         assert "#CD7F32" in HERMES_AGENT_LOGO
         assert "#FFD700" in HERMES_AGENT_LOGO
