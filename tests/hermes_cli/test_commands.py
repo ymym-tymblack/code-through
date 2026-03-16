@@ -1,5 +1,7 @@
 """Tests for shared slash command definitions and autocomplete."""
 
+from pathlib import Path
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -165,8 +167,71 @@ class TestSlashCommandCompleter:
 
         assert [item.text for item in completions] == ["tts "]
 
+    def test_prompt_command_suggests_clear_option(self):
+        completions = _completions(SlashCommandCompleter(), "/prompt c")
+
+        assert [item.text for item in completions] == ["clear"]
+        assert completions[0].display_meta_text == "Remove the custom system prompt"
+
+    def test_personality_command_uses_dynamic_options_provider(self):
+        completer = SlashCommandCompleter(
+            command_options_provider=lambda command: {
+                "/personality": (
+                    ("none", "Disable personality overlay"),
+                    ("teacher", "Explain concepts clearly with examples"),
+                )
+            }.get(command, ()),
+        )
+
+        completions = _completions(completer, "/personality t")
+
+        assert [item.text for item in completions] == ["teacher"]
+        assert completions[0].display_meta_text == "Explain concepts clearly with examples"
+
+    def test_skin_command_uses_dynamic_options_provider(self):
+        completer = SlashCommandCompleter(
+            command_options_provider=lambda command: {
+                "/skin": (
+                    ("default", "Classic Hermes gold/kawaii"),
+                    ("slate", "Cool blue developer-focused theme"),
+                )
+            }.get(command, ()),
+        )
+
+        completions = _completions(completer, "/skin s")
+
+        assert [item.text for item in completions] == ["slate"]
+        assert completions[0].display_meta_text == "Cool blue developer-focused theme"
+
+    def test_explain_command_completes_workspace_paths(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        guide = docs / "guide.md"
+        guide.write_text("hello", encoding="utf-8")
+
+        completer = SlashCommandCompleter(workspace_root_provider=lambda: tmp_path)
+        completions = _completions(completer, "/explain do")
+
+        assert [item.text for item in completions] == ["docs/"]
+        assert completions[0].display_meta_text == "Directory"
+
+    def test_flow_command_completes_optional_path_argument(self, tmp_path):
+        package = tmp_path / "pkg"
+        package.mkdir()
+        module = package / "worker.py"
+        module.write_text("def run():\n    return 1\n", encoding="utf-8")
+
+        completer = SlashCommandCompleter(workspace_root_provider=lambda: tmp_path)
+        completions = _completions(completer, "/flow run pk")
+
+        assert [item.text for item in completions] == ["pkg/"]
+        assert completions[0].display_meta_text == "Directory"
+
     def test_command_without_registered_options_does_not_suggest_arguments(self):
         assert _completions(SlashCommandCompleter(), "/help ") == []
 
     def test_only_first_argument_gets_option_completion(self):
         assert _completions(SlashCommandCompleter(), "/review apply now") == []
+
+    def test_non_path_second_argument_for_flow_does_not_complete(self):
+        assert _completions(SlashCommandCompleter(), "/flow symbol other extra") == []

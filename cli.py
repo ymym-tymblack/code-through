@@ -5410,7 +5410,30 @@ class HermesCLI:
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
-            completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
+            completer=SlashCommandCompleter(
+                skill_commands_provider=lambda: _skill_commands,
+                command_options_provider=lambda command: {
+                    "/personality": (
+                        ("none", "Disable personality overlay"),
+                        ("default", "Alias for no personality overlay"),
+                        ("neutral", "Alias for no personality overlay"),
+                        *tuple(
+                            (
+                                name,
+                                str(value.get("description") or value.get("system_prompt", "")[:60])
+                                if isinstance(value, dict)
+                                else str(value)[:60],
+                            )
+                            for name, value in self.personalities.items()
+                        ),
+                    ),
+                    "/skin": tuple(
+                        (skin["name"], skin["description"])
+                        for skin in __import__("hermes_cli.skin_engine", fromlist=["list_skins"]).list_skins()
+                    ),
+                }.get(command, ()),
+                workspace_root_provider=lambda: self.workspace_root,
+            ),
             complete_while_typing=True,
         )
 

@@ -7,7 +7,8 @@ interactive CLI.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.completion import Completer, Completion
@@ -100,7 +101,18 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("tts", "Toggle text-to-speech playback"),
         ("status", "Show voice mode status"),
     ),
+    "/prompt": (
+        ("clear", "Remove the custom system prompt"),
+    ),
+    "/insights": (
+        ("--days", "Set lookback window in days"),
+        ("--source", "Filter insights by source/platform"),
+    ),
 }
+
+
+CommandOption = tuple[str, str]
+CommandArgContext = tuple[str, list[str], int, str]
 
 
 class SlashCommandCompleter(Completer):
@@ -109,8 +121,12 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        command_options_provider: Callable[[str], Iterable[CommandOption]] | None = None,
+        workspace_root_provider: Callable[[], str | Path] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._command_options_provider = command_options_provider
+        self._workspace_root_provider = workspace_root_provider
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -119,6 +135,33 @@ class SlashCommandCompleter(Completer):
             return self._skill_commands_provider() or {}
         except Exception:
             return {}
+
+    def _iter_dynamic_command_options(self, command: str) -> tuple[CommandOption, ...]:
+        if self._command_options_provider is None:
+            return ()
+        try:
+            options = self._command_options_provider(command) or ()
+        except Exception:
+            return ()
+        return tuple((str(option), str(desc)) for option, desc in options)
+
+    def _iter_command_options(self, command: str) -> tuple[CommandOption, ...]:
+        seen: set[str] = set()
+        combined: list[CommandOption] = []
+        for option, desc in (*COMMAND_OPTIONS.get(command, ()), *self._iter_dynamic_command_options(command)):
+            if option in seen:
+                continue
+            seen.add(option)
+            combined.append((option, desc))
+        return tuple(combined)
+
+    def _workspace_root(self) -> Path | None:
+        if self._workspace_root_provider is None:
+            return None
+        try:
+            return Path(self._workspace_root_provider()).expanduser().resolve()
+        except Exception:
+            return None
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -132,35 +175,93 @@ class SlashCommandCompleter(Completer):
         return f"{cmd_name} " if cmd_name == word else cmd_name
 
     @staticmethod
-    def _parse_option_context(text: str) -> tuple[str, str] | None:
-        """Return (command, option_prefix) when completing the first option.
-
-        Only the first argument is completed for now. Free-form arguments after
-        the first option are intentionally left untouched.
-        """
+    def _parse_argument_context(text: str) -> CommandArgContext | None:
+        """Return (command, args, arg_index, current_arg) for slash command arguments."""
         body = text[1:]
         if not body or body.lstrip() != body or " " not in body:
             return None
 
-        command_name, remainder = body.split(" ", maxsplit=1)
-        option_prefix = remainder.lstrip()
-        if " " in option_prefix:
+        tokens = body.split(" ")
+        if not tokens or not tokens[0]:
             return None
-        return f"/{command_name}", option_prefix
+
+        command = f"/{tokens[0]}"
+        args = tokens[1:]
+        if not args:
+            return None
+        return command, args, len(args) - 1, args[-1]
+
+    @staticmethod
+    def _looks_like_path_prefix(value: str) -> bool:
+        return not value or any(sep in value for sep in ("/", ".", "-", "_")) or value.islower()
+
+    @staticmethod
+    def _iter_path_completions(workspace_root: Path, prefix: str) -> tuple[CommandOption, ...]:
+        normalized = prefix.replace("\\", "/")
+        if normalized.startswith("/"):
+            return ()
+
+        prefix_path = Path(normalized) if normalized else Path()
+        if normalized.endswith("/"):
+            parent_rel = prefix_path
+            name_prefix = ""
+        elif prefix_path.parent == Path("."):
+            parent_rel = Path()
+            name_prefix = prefix_path.name
+        else:
+            parent_rel = prefix_path.parent
+            name_prefix = prefix_path.name
+
+        search_root = (workspace_root / parent_rel).resolve()
+        try:
+            search_root.relative_to(workspace_root)
+        except ValueError:
+            return ()
+        if not search_root.is_dir():
+            return ()
+
+        completions: list[CommandOption] = []
+        for child in sorted(search_root.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+            if name_prefix and not child.name.startswith(name_prefix):
+                continue
+            rel_path = child.relative_to(workspace_root).as_posix()
+            if child.is_dir():
+                completions.append((f"{rel_path}/", "Directory"))
+            else:
+                completions.append((rel_path, "File"))
+        return tuple(completions)
+
+    def _iter_argument_completions(self, context: CommandArgContext) -> tuple[CommandOption, ...]:
+        command, _args, arg_index, current_arg = context
+        if arg_index == 0:
+            options = self._iter_command_options(command)
+            if options:
+                return options
+            if command == "/explain":
+                workspace_root = self._workspace_root()
+                if workspace_root is not None:
+                    return self._iter_path_completions(workspace_root, current_arg)
+            return ()
+
+        if command == "/flow" and arg_index == 1 and self._looks_like_path_prefix(current_arg):
+            workspace_root = self._workspace_root()
+            if workspace_root is not None:
+                return self._iter_path_completions(workspace_root, current_arg)
+        return ()
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
 
-        option_context = self._parse_option_context(text)
-        if option_context is not None:
-            command, option_prefix = option_context
-            for option, desc in COMMAND_OPTIONS.get(command, ()):
-                if option.startswith(option_prefix):
+        argument_context = self._parse_argument_context(text)
+        if argument_context is not None:
+            _command, _args, _arg_index, current_arg = argument_context
+            for option, desc in self._iter_argument_completions(argument_context):
+                if option.startswith(current_arg):
                     yield Completion(
-                        self._completion_text(option, option_prefix),
-                        start_position=-len(option_prefix),
+                        self._completion_text(option, current_arg),
+                        start_position=-len(current_arg),
                         display=option,
                         display_meta=desc,
                     )
