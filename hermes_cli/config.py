@@ -214,6 +214,7 @@ DEFAULT_CONFIG = {
     "review": {
         "natural_language": "en",
         "promotion_mode": "semi_auto",
+        "exclude_globs": [],
     },
     
     "human_delay": {

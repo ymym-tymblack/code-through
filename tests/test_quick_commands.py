@@ -180,6 +180,32 @@ class TestCLIQuickCommands:
         assert "Create a new reusable Hermes skill" in queued_prompt
         assert "Add a regression test for retry flow." in queued_prompt
 
+    def test_start_review_watcher_passes_exclude_globs(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._review_thread = None
+        cli._ensure_runtime_credentials = MagicMock(return_value=True)
+        cli.workspace_root = MagicMock()
+        cli.api_key = "key"
+        cli.base_url = "https://example.com/v1"
+        cli.provider = "openrouter"
+        cli.api_mode = "chat_completions"
+        cli.review_natural_language = "en"
+        cli._app = None
+        cli.session_id = "sess"
+
+        watcher_instance = MagicMock()
+        with patch("cli.CLI_CONFIG", {"review": {"exclude_globs": ["memo/**", "notes/*.md"]}}), \
+             patch("cli.threading.Thread") as thread_cls, \
+             patch("hermes_cli.codex_companion.CodexCompanionWatcher", return_value=watcher_instance) as watcher_cls:
+            thread_cls.return_value = MagicMock()
+            assert cli._start_review_watcher() is True
+
+        watcher_cls.assert_called_once()
+        kwargs = watcher_cls.call_args.kwargs
+        assert kwargs["ignore_globs"] == ["memo/**", "notes/*.md"]
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 

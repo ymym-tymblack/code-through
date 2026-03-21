@@ -1,6 +1,6 @@
 import json
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from hermes_cli.codex_companion import (
     CodexCompanionWatcher,
@@ -27,6 +27,20 @@ def test_collect_workspace_snapshot_skips_ignored_dirs(tmp_path):
 
     assert "src/main.py" in snapshot
     assert ".git/ignored.txt" not in snapshot
+
+
+def test_collect_workspace_snapshot_skips_review_exclude_globs(tmp_path):
+    (tmp_path / "memo").mkdir()
+    (tmp_path / "memo" / "note.md").write_text("todo\n", encoding="utf-8")
+    (tmp_path / "memo" / "keep.py").write_text("print('skip dir')\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    snapshot = collect_workspace_snapshot(tmp_path, ignore_globs=["memo/**"])
+
+    assert "src/main.py" in snapshot
+    assert "memo/note.md" not in snapshot
+    assert "memo/keep.py" not in snapshot
 
 
 def test_detect_changes_handles_created_modified_deleted(tmp_path):

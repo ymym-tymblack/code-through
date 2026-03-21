@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import fnmatch
 import hashlib
 import json
 import os
@@ -210,6 +211,49 @@ def should_ignore_path(path: Path, root: Path) -> bool:
     if any(part in DEFAULT_IGNORE_DIRS for part in rel_parts[:-1]):
         return True
     return path.suffix.lower() in DEFAULT_IGNORE_SUFFIXES
+
+
+def _normalize_ignore_globs(ignore_globs: Optional[Sequence[str]]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for item in ignore_globs or ():
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized.append(text.replace("\\", "/"))
+    return tuple(normalized)
+
+
+def _matches_ignore_glob(rel_path: str, ignore_globs: Sequence[str]) -> bool:
+    if not ignore_globs:
+        return False
+    rel = rel_path.replace("\\", "/").lstrip("./")
+    path_obj = Path(rel)
+    candidates = {rel}
+    for parent in path_obj.parents:
+        parent_str = str(parent).replace("\\", "/")
+        if parent_str and parent_str != ".":
+            candidates.add(parent_str)
+            candidates.add(f"{parent_str}/")
+    for candidate in list(candidates):
+        candidates.add(f"./{candidate}")
+    for pattern in ignore_globs:
+        normalized_pattern = pattern.replace("\\", "/").strip()
+        if not normalized_pattern:
+            continue
+        for candidate in candidates:
+            if fnmatch.fnmatchcase(candidate, normalized_pattern):
+                return True
+    return False
+
+
+def should_ignore_review_path(path: Path, root: Path, ignore_globs: Optional[Sequence[str]] = None) -> bool:
+    if should_ignore_path(path, root):
+        return True
+    try:
+        rel_path = str(path.relative_to(root))
+    except ValueError:
+        return True
+    return _matches_ignore_glob(rel_path, _normalize_ignore_globs(ignore_globs))
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -436,10 +480,12 @@ def collect_related_context(
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_related_files: int = DEFAULT_MAX_RELATED_FILES,
     max_total_chars: int = DEFAULT_MAX_RELATED_CHARS,
+    ignore_globs: Optional[Sequence[str]] = None,
 ) -> list[dict[str, str]]:
     related: list[dict[str, str]] = []
     seen: set[str] = set(changed_paths)
     total_chars = 0
+    normalized_ignore_globs = _normalize_ignore_globs(ignore_globs)
 
     for rel_path in changed_paths:
         text = None
@@ -449,6 +495,8 @@ def collect_related_context(
             text = _read_workspace_file(workspace_root, rel_path, max_file_bytes=max_file_bytes) or ""
         for candidate in _extract_related_paths_from_text(text, source_path=rel_path, workspace_root=workspace_root):
             if candidate in seen:
+                continue
+            if _matches_ignore_glob(candidate, normalized_ignore_globs):
                 continue
             candidate_text = _read_workspace_file(workspace_root, candidate, max_file_bytes=max_file_bytes)
             if not candidate_text:
@@ -494,14 +542,22 @@ def collect_workspace_snapshot(
     root: Path,
     *,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    ignore_globs: Optional[Sequence[str]] = None,
 ) -> Dict[str, FileSnapshot]:
     snapshots: Dict[str, FileSnapshot] = {}
+    normalized_ignore_globs = _normalize_ignore_globs(ignore_globs)
     for dirpath, dirnames, filenames in os.walk(root):
         current_dir = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORE_DIRS]
+        filtered_dirnames: list[str] = []
+        for dirname in dirnames:
+            candidate_dir = current_dir / dirname
+            if should_ignore_review_path(candidate_dir, root, normalized_ignore_globs):
+                continue
+            filtered_dirnames.append(dirname)
+        dirnames[:] = filtered_dirnames
         for filename in filenames:
             path = current_dir / filename
-            if should_ignore_path(path, root):
+            if should_ignore_review_path(path, root, normalized_ignore_globs):
                 continue
             text = _load_text_file(path, max_file_bytes=max_file_bytes)
             if text is None:
@@ -1082,14 +1138,20 @@ def analyze_change_set(
     model: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
     natural_language: Optional[str] = None,
+    ignore_globs: Optional[Sequence[str]] = None,
 ) -> dict:
     event = dict(event)
     root = Path(event["workspace_root"])
-    snapshots = collect_workspace_snapshot(root, max_file_bytes=DEFAULT_MAX_FILE_BYTES)
+    snapshots = collect_workspace_snapshot(
+        root,
+        max_file_bytes=DEFAULT_MAX_FILE_BYTES,
+        ignore_globs=ignore_globs,
+    )
     event["related_files"] = collect_related_context(
         root,
         changed_paths=[str(change["path"]) for change in event.get("changes", [])],
         snapshots=snapshots,
+        ignore_globs=ignore_globs,
     )
     prompt = _build_analysis_prompt(event, natural_language=natural_language)
     result = analyze_prompt(
@@ -1157,6 +1219,7 @@ class CodexCompanionWatcher:
         analyze: bool = True,
         once: bool = False,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        ignore_globs: Optional[Sequence[str]] = None,
         runtime: Optional[dict[str, Any]] = None,
         natural_language: Optional[str] = None,
         on_event: Optional[Callable[[dict, Path], None]] = None,
@@ -1169,6 +1232,7 @@ class CodexCompanionWatcher:
         self.analyze = analyze
         self.once = once
         self.max_file_bytes = max_file_bytes
+        self.ignore_globs = _normalize_ignore_globs(ignore_globs)
         self.runtime = runtime
         self.natural_language = _normalize_natural_language(natural_language)
         self.on_event = on_event
@@ -1179,6 +1243,7 @@ class CodexCompanionWatcher:
         self._previous_snapshot = collect_workspace_snapshot(
             self.workspace_root,
             max_file_bytes=self.max_file_bytes,
+            ignore_globs=self.ignore_globs,
         )
         self._pending: Dict[str, PendingChange] = {}
 
@@ -1243,6 +1308,7 @@ class CodexCompanionWatcher:
                 event,
                 runtime=self.runtime,
                 natural_language=self.natural_language,
+                ignore_globs=self.ignore_globs,
             )
         except Exception as exc:
             error_payload = {
@@ -1297,6 +1363,7 @@ class CodexCompanionWatcher:
                 current_snapshot = collect_workspace_snapshot(
                     self.workspace_root,
                     max_file_bytes=self.max_file_bytes,
+                    ignore_globs=self.ignore_globs,
                 )
                 changes = detect_changes(self._previous_snapshot, current_snapshot)
                 self._previous_snapshot = current_snapshot

@@ -3076,6 +3076,7 @@ class HermesCLI:
             poll_interval=float(review_cfg.get("poll_interval", 1.0)),
             debounce_seconds=float(review_cfg.get("debounce_seconds", 2.0)),
             max_file_bytes=int(review_cfg.get("max_file_bytes", 200_000)),
+            ignore_globs=review_cfg.get("exclude_globs", []),
             runtime={
                 "api_key": self.api_key,
                 "base_url": self.base_url,
