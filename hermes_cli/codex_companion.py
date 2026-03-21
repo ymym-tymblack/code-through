@@ -959,6 +959,60 @@ def build_directory_explanation_prompt(
     return "\n".join(lines)
 
 
+def build_commit_message_prompt(
+    workspace_root: Path,
+    *,
+    status_text: str,
+    diff_text: str,
+    changed_paths: Sequence[str],
+    untracked_context: str = "",
+    extra_instruction: str = "",
+    natural_language: Optional[str] = None,
+) -> str:
+    spec = _language_spec(natural_language)
+    lines = [
+        f"You are writing a git commit message explanation for a developer in {spec['name']}.",
+        "Summarize the current uncommitted changes into a single cohesive commit message.",
+        "Prefer concrete behavior and intent over low-level diff narration.",
+        "",
+        f"Return exactly these sections in {spec['name']}:",
+        "## Subject",
+        "## Details",
+        "",
+        "Requirements:",
+        "- Subject must be exactly one line, imperative mood, max 72 characters, and no trailing period.",
+        "- Details must be 2-5 bullet points.",
+        "- Mention the most important files or behaviors changed.",
+        "- Do not wrap the subject in backticks or quotes.",
+        "",
+        f"Workspace: {workspace_root}",
+        f"Changed paths ({len(changed_paths)}): {', '.join(changed_paths) if changed_paths else '(none)'}",
+        "",
+        "Git status:",
+        status_text or "(empty)",
+        "",
+    ]
+    if extra_instruction.strip():
+        lines.extend([
+            "Additional instruction:",
+            extra_instruction.strip(),
+            "",
+        ])
+    if diff_text.strip():
+        lines.extend([
+            "Diff:",
+            diff_text.strip(),
+            "",
+        ])
+    if untracked_context.strip():
+        lines.extend([
+            "Untracked file excerpts:",
+            untracked_context.strip(),
+            "",
+        ])
+    return "\n".join(lines).strip()
+
+
 def find_symbol_candidates(
     workspace_root: Path,
     *,

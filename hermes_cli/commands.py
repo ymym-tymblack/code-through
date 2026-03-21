@@ -31,6 +31,7 @@ COMMANDS_BY_CATEGORY = {
         "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply|promote])",
         "/explain": "Explain a file in natural language (usage: /explain <path>)",
         "/flow": "Explain a symbol or flow (usage: /flow <symbol> [path])",
+        "/commit": "Generate a commit message for the current git diff (usage: /commit [extra guidance])",
         "/promote": "Queue a memory/skill promotion from the latest analysis (usage: /promote [last|review|explain|flow] [memory|skill] [index])",
     },
     "Configuration": {

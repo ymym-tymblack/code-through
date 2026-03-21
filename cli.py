@@ -17,6 +17,7 @@ import os
 import shutil
 import sys
 import json
+import subprocess
 import atexit
 import tempfile
 import time
@@ -3283,6 +3284,142 @@ class HermesCLI:
             metadata={"target_path": target_path, "symbol": symbol, "related_files": related},
         )
 
+    def _run_git_command(self, *args: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess[str]:
+        target_cwd = str((cwd or self.workspace_root).resolve())
+        return subprocess.run(
+            ["git", *args],
+            cwd=target_cwd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    @staticmethod
+    def _is_text_previewable(path: Path, *, max_bytes: int = 40_000) -> bool:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return False
+        if len(data) > max_bytes or b"\x00" in data:
+            return False
+        return True
+
+    def _collect_untracked_commit_context(
+        self,
+        repo_root: Path,
+        untracked_paths: list[str],
+        *,
+        max_files: int = 5,
+        max_chars: int = 8_000,
+    ) -> str:
+        excerpts: list[str] = []
+        remaining = max_chars
+        for rel_path in untracked_paths[:max_files]:
+            path = (repo_root / rel_path).resolve()
+            try:
+                path.relative_to(repo_root)
+            except ValueError:
+                continue
+            if not path.is_file() or not self._is_text_previewable(path):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            excerpt = text[: min(remaining, 1500)].strip()
+            if not excerpt:
+                continue
+            excerpts.append(f"### {rel_path}\n{excerpt}")
+            remaining -= len(excerpt)
+            if remaining <= 0:
+                break
+        return "\n\n".join(excerpts)
+
+    def _collect_commit_context(self) -> dict[str, Any]:
+        repo_result = self._run_git_command("rev-parse", "--show-toplevel")
+        if repo_result.returncode != 0:
+            return {"error": "Current workspace is not inside a git repository."}
+
+        repo_root = Path((repo_result.stdout or "").strip()).resolve()
+        status_result = self._run_git_command("status", "--short", cwd=repo_root)
+        if status_result.returncode != 0:
+            message = (status_result.stderr or status_result.stdout or "git status failed").strip()
+            return {"error": f"Failed to inspect git status: {message}"}
+
+        status_text = (status_result.stdout or "").strip()
+        if not status_text:
+            return {"error": "No git changes detected in the current repository."}
+
+        changed_paths: list[str] = []
+        untracked_paths: list[str] = []
+        for raw_line in status_text.splitlines():
+            line = raw_line.rstrip()
+            rel_path = line[2:].strip() if len(line) >= 3 else line.strip()
+            if " -> " in rel_path:
+                rel_path = rel_path.split(" -> ")[-1].strip()
+            if rel_path:
+                changed_paths.append(rel_path)
+            if line.startswith("??") and rel_path:
+                untracked_paths.append(rel_path)
+
+        diff_sections: list[str] = []
+        staged_result = self._run_git_command("diff", "--cached", "--no-ext-diff", "--unified=3", "--", cwd=repo_root)
+        if staged_result.returncode == 0 and (staged_result.stdout or "").strip():
+            diff_sections.append("## Staged diff\n" + staged_result.stdout.strip())
+
+        unstaged_result = self._run_git_command("diff", "--no-ext-diff", "--unified=3", "--", cwd=repo_root)
+        if unstaged_result.returncode == 0 and (unstaged_result.stdout or "").strip():
+            diff_sections.append("## Unstaged diff\n" + unstaged_result.stdout.strip())
+
+        return {
+            "repo_root": str(repo_root),
+            "status_text": status_text,
+            "diff_text": "\n\n".join(diff_sections).strip(),
+            "changed_paths": changed_paths,
+            "untracked_paths": untracked_paths,
+            "untracked_context": self._collect_untracked_commit_context(repo_root, untracked_paths),
+        }
+
+    def _handle_commit_command(self, cmd: str) -> None:
+        context = self._collect_commit_context()
+        error = context.get("error")
+        if error:
+            _cprint(f"  (>_<) {error}")
+            return
+
+        parts = cmd.strip().split(maxsplit=1)
+        extra_instruction = parts[1].strip() if len(parts) > 1 else ""
+
+        from hermes_cli.codex_companion import build_commit_message_prompt
+
+        changed_paths = context.get("changed_paths", []) or []
+        prompt = build_commit_message_prompt(
+            self.workspace_root,
+            status_text=context.get("status_text", ""),
+            diff_text=context.get("diff_text", ""),
+            changed_paths=changed_paths,
+            untracked_context=context.get("untracked_context", ""),
+            extra_instruction=extra_instruction,
+            natural_language=getattr(self, "review_natural_language", "en"),
+        )
+        subtitle = ", ".join(changed_paths[:3])
+        if len(changed_paths) > 3:
+            subtitle += ", ..."
+        subtitle = subtitle or f"{len(changed_paths)} files"
+        self._run_review_prompt(
+            prompt=prompt,
+            title="Commit Message",
+            subtitle=subtitle,
+            command_name="commit",
+            metadata={
+                "repo_root": context.get("repo_root", ""),
+                "changed_paths": changed_paths,
+                "status_text": context.get("status_text", ""),
+                "untracked_paths": context.get("untracked_paths", []),
+                "extra_instruction": extra_instruction,
+            },
+        )
+
     def _handle_review_command(self, cmd: str) -> None:
         parts = cmd.strip().split(maxsplit=2)
         action = parts[1].lower() if len(parts) > 1 else "status"
@@ -3617,6 +3754,8 @@ class HermesCLI:
             self._handle_explain_command(cmd_original)
         elif cmd_lower.startswith("/flow"):
             self._handle_flow_command(cmd_original)
+        elif cmd_lower.startswith("/commit"):
+            self._handle_commit_command(cmd_original)
         elif cmd_lower.startswith("/promote"):
             self._handle_promote_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
