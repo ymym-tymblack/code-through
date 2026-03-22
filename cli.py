@@ -3421,8 +3421,36 @@ class HermesCLI:
             },
         )
 
+    def _get_review_exclude_globs(self) -> list[str]:
+        review_cfg = CLI_CONFIG.setdefault("review", {})
+        raw = review_cfg.get("exclude_globs", [])
+        if not isinstance(raw, list):
+            raw = []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    def _set_review_exclude_globs(self, patterns: list[str]) -> bool:
+        normalized = []
+        seen = set()
+        for item in patterns:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        CLI_CONFIG.setdefault("review", {})["exclude_globs"] = normalized
+        saved = save_config_value("review.exclude_globs", normalized)
+        watcher_running = bool(self._review_thread and self._review_thread.is_alive())
+        if watcher_running:
+            self._stop_review_watcher()
+            restarted = self._start_review_watcher()
+            if restarted:
+                _cprint("  Review watcher restarted to apply exclusion changes.")
+            else:
+                _cprint("  Review watcher stopped; exclusion changes will apply next time it starts.")
+        return saved
+
     def _handle_review_command(self, cmd: str) -> None:
-        parts = cmd.strip().split(maxsplit=2)
+        parts = cmd.strip().split(maxsplit=3)
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "on":
             if self._start_review_watcher():
@@ -3439,7 +3467,9 @@ class HermesCLI:
             latest = ""
             if self._review_latest_event:
                 latest = f" latest event: {self._review_latest_event.get('event_id', '')[:8]}"
-            _cprint(f"  Diff review store: {status}.{latest}")
+            exclude_count = len(self._get_review_exclude_globs())
+            exclude_note = f" exclusions: {exclude_count}" if exclude_count else " exclusions: 0"
+            _cprint(f"  Diff review store: {status}.{latest}{exclude_note}")
             return
         if action == "last":
             analysis = self._review_latest_analysis
@@ -3480,8 +3510,50 @@ class HermesCLI:
             promote_cmd = f"/promote review {extra}".strip()
             self._handle_promote_command(promote_cmd)
             return
+        if action == "exclude":
+            subaction = parts[2].lower().strip() if len(parts) > 2 else "list"
+            current = self._get_review_exclude_globs()
+            if subaction in {"list", "status"}:
+                if not current:
+                    _cprint("  No review exclusion globs configured.")
+                else:
+                    _cprint("  Review exclusion globs:")
+                    for idx, pattern in enumerate(current, start=1):
+                        _cprint(f"    {idx}. {pattern}")
+                return
+            if subaction in {"add", "+"}:
+                pattern = parts[3].strip() if len(parts) > 3 else ""
+                if not pattern:
+                    _cprint("  Usage: /review exclude add <glob>")
+                    return
+                if pattern in current:
+                    _cprint(f"  Review exclusion already exists: {pattern}")
+                    return
+                saved = self._set_review_exclude_globs(current + [pattern])
+                note = " (saved)" if saved else " (session updated; save failed)"
+                _cprint(f"  Added review exclusion: {pattern}{note}")
+                return
+            if subaction in {"remove", "rm", "delete", "del", "-"}:
+                pattern = parts[3].strip() if len(parts) > 3 else ""
+                if not pattern:
+                    _cprint("  Usage: /review exclude remove <glob>")
+                    return
+                if pattern not in current:
+                    _cprint(f"  Review exclusion not found: {pattern}")
+                    return
+                saved = self._set_review_exclude_globs([item for item in current if item != pattern])
+                note = " (saved)" if saved else " (session updated; save failed)"
+                _cprint(f"  Removed review exclusion: {pattern}{note}")
+                return
+            if subaction == "clear":
+                saved = self._set_review_exclude_globs([])
+                note = " (saved)" if saved else " (session updated; save failed)"
+                _cprint(f"  Cleared all review exclusions{note}")
+                return
+            _cprint("  Usage: /review exclude [list|add <glob>|remove <glob>|clear]")
+            return
 
-        _cprint("  Usage: /review [on|off|status|last|apply|promote]")
+        _cprint("  Usage: /review [on|off|status|last|apply|promote|exclude ...]")
 
     def process_command(self, command: str) -> bool:
         """

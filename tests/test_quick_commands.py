@@ -206,6 +206,54 @@ class TestCLIQuickCommands:
         kwargs = watcher_cls.call_args.kwargs
         assert kwargs["ignore_globs"] == ["memo/**", "notes/*.md"]
 
+    def test_review_exclude_add_updates_config_and_prints(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._review_thread = None
+        cli.console = MagicMock()
+
+        with patch("cli.CLI_CONFIG", {"review": {"exclude_globs": ["memo/**"]}}), \
+             patch("cli.save_config_value", return_value=True) as save_mock, \
+             patch("cli._cprint") as cprint_mock:
+            cli._handle_review_command("/review exclude add notes/*.md")
+
+        save_mock.assert_called_once_with("review.exclude_globs", ["memo/**", "notes/*.md"])
+        printed = " ".join(str(call.args[0]) for call in cprint_mock.call_args_list)
+        assert "Added review exclusion: notes/*.md" in printed
+
+    def test_review_exclude_remove_updates_config_and_prints(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._review_thread = None
+        cli.console = MagicMock()
+
+        with patch("cli.CLI_CONFIG", {"review": {"exclude_globs": ["memo/**", "notes/*.md"]}}), \
+             patch("cli.save_config_value", return_value=True) as save_mock, \
+             patch("cli._cprint") as cprint_mock:
+            cli._handle_review_command("/review exclude remove memo/**")
+
+        save_mock.assert_called_once_with("review.exclude_globs", ["notes/*.md"])
+        printed = " ".join(str(call.args[0]) for call in cprint_mock.call_args_list)
+        assert "Removed review exclusion: memo/**" in printed
+
+    def test_review_exclude_list_shows_patterns(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._review_thread = None
+        cli.console = MagicMock()
+
+        with patch("cli.CLI_CONFIG", {"review": {"exclude_globs": ["memo/**", "notes/*.md"]}}), \
+             patch("cli._cprint") as cprint_mock:
+            cli._handle_review_command("/review exclude list")
+
+        printed = " ".join(str(call.args[0]) for call in cprint_mock.call_args_list)
+        assert "Review exclusion globs" in printed
+        assert "memo/**" in printed
+        assert "notes/*.md" in printed
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 

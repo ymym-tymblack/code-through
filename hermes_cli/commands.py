@@ -28,7 +28,7 @@ COMMANDS_BY_CATEGORY = {
         "/compress": "Manually compress conversation context (flush memories + summarize)",
         "/rollback": "List or restore filesystem checkpoints (usage: /rollback [number])",
         "/background": "Run a prompt in the background (usage: /background <prompt>)",
-        "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply|promote])",
+        "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply|promote|exclude ...])",
         "/explain": "Explain a file in natural language (usage: /explain <path>)",
         "/flow": "Explain a symbol or flow (usage: /flow <symbol> [path])",
         "/commit": "Generate a commit message for the current git diff (usage: /commit [extra guidance])",
@@ -85,6 +85,8 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("status", "Show review watcher status"),
         ("last", "Show the latest diff review"),
         ("apply", "Queue an implementation prompt from the latest diff review"),
+        ("promote", "Queue a memory/skill promotion from the latest diff review"),
+        ("exclude", "Manage review exclusion globs"),
     ),
     "/promote": (
         ("last", "Use the most recent review/explain/flow output"),
