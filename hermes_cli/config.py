@@ -227,9 +227,9 @@ DEFAULT_CONFIG = {
 
     "analysis": {
         "enabled": True,
-        "provider": "openrouter",
-        "model": "gemma4:26b",
-        "base_url": "http://localhost:11434/v1",
+        "provider": "custom",
+        "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo",
+        "base_url": "http://127.0.0.1:8000/v1",
         "api_key_env": "",
         "bridge_enabled": True,
         "bridge_dir": ".hermes/companion",

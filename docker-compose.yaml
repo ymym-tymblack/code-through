@@ -1,0 +1,31 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:cu130-nightly
+    container_name: code-through-vllm
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "8000:8000"
+    gpus: all
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - --model
+      - ${VLLM_MODEL:-LilaRest/gemma-4-31B-it-NVFP4-turbo}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --quantization
+      - modelopt
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN:-16384}
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.95}
+      - --kv-cache-dtype
+      - ${VLLM_KV_CACHE_DTYPE:-fp8}
+      - --api-key
+      - ${VLLM_API_KEY:-local-vllm}
+      - --trust-remote-code

@@ -114,7 +114,7 @@ def test_companion_store_writes_workspace_bridge_files(tmp_path):
             title="File Explain",
             body="body",
             workspace_root=str(workspace),
-            metadata={"provider": "openrouter", "model": "gemma4:26b"},
+            metadata={"provider": "custom", "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo"},
         )
 
     latest_payload = json.loads((workspace / ".hermes" / "companion" / "latest.json").read_text(encoding="utf-8"))
@@ -123,7 +123,7 @@ def test_companion_store_writes_workspace_bridge_files(tmp_path):
     assert latest_payload["kind"] == "hermes_companion_output"
     assert latest_payload["command"] == "explain"
     assert latest_payload["content"]["text"] == "body"
-    assert command_payload["metadata"]["model"] == "gemma4:26b"
+    assert command_payload["metadata"]["model"] == "LilaRest/gemma-4-31B-it-NVFP4-turbo"
 
 
 def test_run_codex_watch_rejects_missing_workspace(tmp_path):
@@ -378,9 +378,9 @@ def test_resolve_analysis_runtime_prefers_analysis_config(monkeypatch):
         return_value={
             "analysis": {
                 "enabled": True,
-                "provider": "openrouter",
-                "model": "gemma4:26b",
-                "base_url": "http://127.0.0.1:11434/v1",
+                "provider": "custom",
+                "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo",
+                "base_url": "http://127.0.0.1:8000/v1",
                 "api_key_env": "LOCAL_GEMMA_KEY",
             }
         },
@@ -391,7 +391,7 @@ def test_resolve_analysis_runtime_prefers_analysis_config(monkeypatch):
         )
 
     assert runtime["provider"] == "openrouter"
-    assert runtime["base_url"] == "http://127.0.0.1:11434/v1"
+    assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
     assert runtime["api_key"] == "gemma-key"
     assert runtime["source"] == "analysis-config"
 
