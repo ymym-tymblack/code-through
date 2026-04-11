@@ -1,0 +1,24 @@
+{
+  "name": "Hermes Agent Dev",
+  "dockerComposeFile": [
+    "docker-compose.yml"
+  ],
+  "service": "dev",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "overrideCommand": false,
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "yzhang.markdown-all-in-one",
+        "anthropic.claude-dev"
+      ]
+    }
+  },
+  "postCreateCommand": "bash -lc 'if [ -f pyproject.toml ]; then uv venv .venv --python /usr/bin/python3 && uv pip install --python .venv/bin/python -e \".[dev,cli,cron,pty,mcp,acp,honcho,homeassistant]\"; fi && if [ -f package.json ]; then npm install; fi'",
+  "postStartCommand": "bash -lc 'git config --global --add safe.directory ${containerWorkspaceFolder}'"
+}
