@@ -918,10 +918,11 @@ def resolve_analysis_runtime(
     fallback_runtime: Optional[dict[str, Any]] = None,
     requested_provider: Optional[str] = None,
 ) -> dict[str, Any]:
+    if fallback_runtime:
+        return dict(fallback_runtime)
+
     analysis_cfg = _analysis_config()
     if analysis_cfg.get("enabled", True) is False:
-        if fallback_runtime:
-            return dict(fallback_runtime)
         return resolve_runtime_provider(requested=requested_provider)
 
     provider = str(analysis_cfg.get("provider") or "").strip().lower()
@@ -943,8 +944,6 @@ def resolve_analysis_runtime(
         runtime["source"] = "analysis-config"
         return runtime
 
-    if fallback_runtime:
-        return dict(fallback_runtime)
     return resolve_runtime_provider(requested=requested_provider)
 
 
@@ -1465,6 +1464,133 @@ def plan_sync_targets(
     }
 
 
+def _candidate_sync_files(
+    workspace_root: Path,
+    *,
+    changed_paths: Sequence[str],
+    ignore_globs: Optional[Sequence[str]] = None,
+    limit: int,
+) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _consider(rel_path: str) -> None:
+        normalized = str(rel_path or '').strip().lstrip('./')
+        if not normalized or normalized in seen:
+            return
+        target = (workspace_root / normalized).resolve()
+        if not target.is_file() or should_ignore_review_path(target, workspace_root):
+            return
+        if ignore_globs and _path_matches_any_glob(Path(normalized), ignore_globs):
+            return
+        if _load_text_file(target, max_file_bytes=DEFAULT_MAX_FILE_BYTES) is None:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    for rel_path in changed_paths:
+        _consider(rel_path)
+        if len(candidates) >= limit:
+            return candidates
+
+    for dirpath, dirnames, filenames in os.walk(workspace_root):
+        current_dir = Path(dirpath)
+        dirnames[:] = [d for d in sorted(dirnames) if d not in DEFAULT_IGNORE_DIRS]
+        for filename in sorted(filenames):
+            rel_path = _safe_relpath(current_dir / filename, workspace_root)
+            if rel_path:
+                _consider(rel_path)
+                if len(candidates) >= limit:
+                    return candidates
+    return candidates
+
+
+def _select_flow_targets(
+    workspace_root: Path,
+    *,
+    changed_paths: Sequence[str],
+    ignore_globs: Optional[Sequence[str]] = None,
+    sync_kind: str = 'incremental',
+) -> list[dict[str, str]]:
+    sync_kind = _normalize_sync_kind(sync_kind)
+    limit = DEFAULT_STARTUP_FLOW_TARGETS if sync_kind == 'startup' else DEFAULT_INCREMENTAL_FLOW_TARGETS
+    file_limit = max(limit * 3, DEFAULT_STARTUP_FILE_TARGETS)
+    candidates = _candidate_sync_files(
+        workspace_root,
+        changed_paths=changed_paths,
+        ignore_globs=ignore_globs,
+        limit=file_limit,
+    )
+    targets: list[dict[str, str]] = []
+    for rel_path in candidates:
+        symbol = Path(rel_path).stem
+        reason = 'changed file' if rel_path in changed_paths else 'representative file'
+        if _looks_like_entrypoint(rel_path):
+            reason = 'entrypoint-like file'
+        targets.append({'path': rel_path, 'symbol': symbol, 'reason': reason})
+        if len(targets) >= limit:
+            break
+    return targets
+
+
+def _select_explain_targets(
+    flow_targets: Sequence[dict[str, str]],
+    *,
+    sync_kind: str = 'incremental',
+) -> list[dict[str, str]]:
+    sync_kind = _normalize_sync_kind(sync_kind)
+    file_limit = DEFAULT_STARTUP_FILE_TARGETS if sync_kind == 'startup' else DEFAULT_INCREMENTAL_FILE_TARGETS
+    dir_limit = DEFAULT_STARTUP_DIR_TARGETS if sync_kind == 'startup' else 2
+    targets: list[dict[str, str]] = []
+    seen_files: set[str] = set()
+    seen_dirs: set[str] = set()
+
+    for item in flow_targets:
+        rel_path = str(item.get('path') or '').strip()
+        if not rel_path or rel_path in seen_files:
+            continue
+        seen_files.add(rel_path)
+        targets.append({'path': rel_path, 'kind': 'file', 'reason': 'selected from flow target'})
+        if len([t for t in targets if t.get('kind') == 'file']) >= file_limit:
+            break
+
+    for item in flow_targets:
+        parent = str(Path(str(item.get('path') or '')).parent)
+        if not parent or parent == '.' or parent in seen_dirs:
+            continue
+        seen_dirs.add(parent)
+        targets.append({'path': parent, 'kind': 'directory', 'reason': 'parent directory of flow target'})
+        if len([t for t in targets if t.get('kind') == 'directory']) >= dir_limit:
+            break
+
+    return targets
+
+
+def _explain_directory(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    model: Optional[str] = None,
+    runtime: Optional[dict[str, Any]] = None,
+    natural_language: Optional[str] = None,
+) -> dict[str, Any]:
+    directory_context = collect_directory_context(workspace_root, target_path=target_path)
+    prompt = build_directory_explanation_prompt(
+        workspace_root,
+        target_path=target_path,
+        directory_context=directory_context,
+        natural_language=natural_language,
+    )
+    result = analyze_prompt(
+        prompt,
+        model=model,
+        session_id=f'store-explain-{uuid.uuid4().hex}',
+        runtime=runtime,
+    )
+    result.update({'target_path': target_path, 'kind': 'directory'})
+    return result
+
+
 def generate_sync_bundle(
     workspace_root: Path,
     *,
@@ -1473,85 +1599,127 @@ def generate_sync_bundle(
     runtime: Optional[dict[str, Any]] = None,
     natural_language: Optional[str] = None,
     ignore_globs: Optional[Sequence[str]] = None,
-    sync_kind: str = "incremental",
+    sync_kind: str = 'incremental',
 ) -> dict[str, dict[str, Any]]:
     workspace_root = workspace_root.resolve()
     sync_kind = _normalize_sync_kind(sync_kind)
-    project_context = collect_project_summary(workspace_root)
-    changed_paths = [str(change.get("path")) for change in (event or {}).get("changes", []) if change.get("path")]
-    plan = plan_sync_targets(
-        workspace_root,
-        project_context=project_context,
-        changed_paths=changed_paths,
+    changed_paths = [str(change.get('path')) for change in (event or {}).get('changes', []) if change.get('path')]
+    bundle: dict[str, dict[str, Any]] = {}
+
+    review_event = event or {
+        'event_id': f'startup-{uuid.uuid4().hex}',
+        'workspace_root': str(workspace_root),
+        'changes': [],
+    }
+    review_result = analyze_change_set(
+        review_event,
         model=model,
         runtime=runtime,
         natural_language=natural_language,
+        ignore_globs=ignore_globs,
+    )
+    bundle['review'] = {
+        'title': 'Diff Review',
+        'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'startup snapshot',
+        'body': review_result.get('analysis', ''),
+        'metadata': {
+            'sync_kind': sync_kind,
+            'targets': [{'path': path} for path in changed_paths],
+            'related_files': review_result.get('related_files', []),
+            'promotion_candidates': review_result.get('promotion_candidates', []),
+            'selection_reason': 'changed files' if changed_paths else 'workspace snapshot',
+            'source_event_id': review_event.get('event_id', ''),
+        },
+    }
+
+    flow_targets = _select_flow_targets(
+        workspace_root,
+        changed_paths=changed_paths,
+        ignore_globs=ignore_globs,
         sync_kind=sync_kind,
     )
-    bundle: dict[str, dict[str, Any]] = {}
-
-    review_prompt = build_project_review_prompt(workspace_root, project_context=project_context, natural_language=natural_language)
-    review_result = analyze_prompt(review_prompt, model=model, session_id=f"store-review-{uuid.uuid4().hex}", runtime=runtime)
-    bundle["review"] = {
-        "title": "Code Review",
-        "subtitle": str(plan.get("review_scope") or "project quality and architecture"),
-        "body": review_result.get("analysis", ""),
-        "metadata": {"sync_kind": sync_kind, "targets": [], "selection_reason": plan.get("review_scope", "")},
+    flow_parts: list[str] = []
+    for item in flow_targets:
+        result = explain_file(
+            workspace_root,
+            target_path=item['path'],
+            symbol=item['symbol'],
+            model=model,
+            runtime=runtime,
+            natural_language=natural_language,
+        )
+        flow_parts.append(f"# {item['symbol']} @ {item['path']}\n{result.get('analysis', '')}".strip())
+    bundle['flow'] = {
+        'title': 'Flow',
+        'subtitle': ', '.join(item['symbol'] for item in flow_targets[:3]) or 'No targets',
+        'body': '\n\n'.join(part for part in flow_parts if part).strip(),
+        'metadata': {
+            'sync_kind': sync_kind,
+            'targets': flow_targets,
+            'selection_reason': 'changed files first, then representative files',
+        },
     }
 
-    explain_parts = []
-    explain_targets = []
-    for item in plan.get("explain_targets", []):
-        rel_path = str(item.get("path") or "")
-        kind = str(item.get("kind") or "file")
+    explain_targets = _select_explain_targets(flow_targets, sync_kind=sync_kind)
+    explain_parts: list[str] = []
+    for item in explain_targets:
+        rel_path = str(item.get('path') or '')
+        kind = str(item.get('kind') or 'file')
         if not rel_path:
             continue
-        if kind == "directory":
-            directory_context = collect_directory_context(workspace_root, target_path=rel_path)
-            prompt = build_directory_explanation_prompt(workspace_root, target_path=rel_path, directory_context=directory_context, natural_language=natural_language)
+        if kind == 'directory':
+            result = _explain_directory(
+                workspace_root,
+                target_path=rel_path,
+                model=model,
+                runtime=runtime,
+                natural_language=natural_language,
+            )
         else:
-            related = collect_related_context(workspace_root, changed_paths=[rel_path], ignore_globs=ignore_globs, max_related_files=4, max_total_chars=10_000)
-            prompt = build_file_explanation_prompt(workspace_root, target_path=rel_path, related_files=related, natural_language=natural_language)
-        result = analyze_prompt(prompt, model=model, session_id=f"store-explain-{uuid.uuid4().hex}", runtime=runtime)
+            result = explain_file(
+                workspace_root,
+                target_path=rel_path,
+                model=model,
+                runtime=runtime,
+                natural_language=natural_language,
+            )
         explain_parts.append(f"# {rel_path}\n{result.get('analysis', '')}".strip())
-        explain_targets.append({"path": rel_path, "kind": kind, "reason": item.get("reason", "")})
-    bundle["explain"] = {
-        "title": "Explain",
-        "subtitle": ", ".join(target["path"] for target in explain_targets[:3]) or "No targets",
-        "body": "\n\n".join(part for part in explain_parts if part).strip(),
-        "metadata": {"sync_kind": sync_kind, "targets": explain_targets, "selection_reason": "llm planner"},
+    bundle['explain'] = {
+        'title': 'Explain',
+        'subtitle': ', '.join(item['path'] for item in explain_targets[:3]) or 'No targets',
+        'body': '\n\n'.join(part for part in explain_parts if part).strip(),
+        'metadata': {
+            'sync_kind': sync_kind,
+            'targets': explain_targets,
+            'selection_reason': 'derived from flow targets',
+        },
     }
 
-    flow_parts = []
-    flow_targets = []
-    for item in plan.get("flow_targets", []):
-        rel_path = str(item.get("path") or "")
-        symbol = str(item.get("symbol") or "").strip() or Path(rel_path).stem
-        if not rel_path:
-            continue
-        related = collect_related_context(workspace_root, changed_paths=[rel_path], ignore_globs=ignore_globs, max_related_files=4, max_total_chars=10_000)
-        prompt = build_file_explanation_prompt(workspace_root, target_path=rel_path, symbol=symbol, related_files=related, natural_language=natural_language)
-        result = analyze_prompt(prompt, model=model, session_id=f"store-flow-{uuid.uuid4().hex}", runtime=runtime)
-        flow_parts.append(f"# {symbol} @ {rel_path}\n{result.get('analysis', '')}".strip())
-        flow_targets.append({"path": rel_path, "symbol": symbol, "reason": item.get("reason", "")})
-    bundle["flow"] = {
-        "title": "Flow",
-        "subtitle": ", ".join(target["symbol"] for target in flow_targets[:3]) or "No targets",
-        "body": "\n\n".join(part for part in flow_parts if part).strip(),
-        "metadata": {"sync_kind": sync_kind, "targets": flow_targets, "selection_reason": "llm planner"},
-    }
-
-    diff_prompt = build_diff_explanation_prompt(workspace_root, event=event, changed_paths=changed_paths, natural_language=natural_language)
-    diff_result = analyze_prompt(diff_prompt, model=model, session_id=f"store-diff-{uuid.uuid4().hex}", runtime=runtime)
-    bundle["diff"] = {
-        "title": "Diff",
-        "subtitle": ", ".join(changed_paths[:3]) if changed_paths else "No tracked changes",
-        "body": diff_result.get("analysis", ""),
-        "metadata": {"sync_kind": sync_kind, "targets": [{"path": path} for path in changed_paths], "selection_reason": plan.get("diff_scope", "recent changes"), "source_event_id": (event or {}).get("event_id", "")},
+    diff_prompt = build_diff_explanation_prompt(
+        workspace_root,
+        event=event,
+        changed_paths=changed_paths,
+        natural_language=natural_language,
+    )
+    diff_result = analyze_prompt(
+        diff_prompt,
+        model=model,
+        session_id=f'store-diff-{uuid.uuid4().hex}',
+        runtime=runtime,
+    )
+    bundle['diff'] = {
+        'title': 'Diff',
+        'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'No tracked changes',
+        'body': diff_result.get('analysis', ''),
+        'metadata': {
+            'sync_kind': sync_kind,
+            'targets': [{'path': path} for path in changed_paths],
+            'selection_reason': 'current git/workspace diff',
+            'source_event_id': (event or {}).get('event_id', ''),
+        },
     }
 
     return bundle
-
 
 def find_symbol_candidates(
     workspace_root: Path,
@@ -1705,6 +1873,7 @@ class CodexCompanionWatcher:
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         ignore_globs: Optional[Sequence[str]] = None,
         runtime: Optional[dict[str, Any]] = None,
+        model: Optional[str] = None,
         natural_language: Optional[str] = None,
         on_event: Optional[Callable[[dict, Path], None]] = None,
         on_analysis: Optional[Callable[[dict, Path], None]] = None,
@@ -1718,6 +1887,7 @@ class CodexCompanionWatcher:
         self.max_file_bytes = max_file_bytes
         self.ignore_globs = _normalize_ignore_globs(ignore_globs)
         self.runtime = runtime
+        self.model = model
         self.natural_language = _normalize_natural_language(natural_language)
         self.on_event = on_event
         self.on_analysis = on_analysis
@@ -1810,7 +1980,7 @@ class CodexCompanionWatcher:
     def run_startup_sync(self) -> dict[str, dict[str, Any]]:
         bundle = generate_sync_bundle(
             self.workspace_root,
-            model=None,
+            model=self.model,
             runtime=self.runtime,
             natural_language=self.natural_language,
             ignore_globs=self.ignore_globs,
@@ -1832,6 +2002,7 @@ class CodexCompanionWatcher:
             bundle = generate_sync_bundle(
                 self.workspace_root,
                 event=event,
+                model=self.model,
                 runtime=self.runtime,
                 natural_language=self.natural_language,
                 ignore_globs=self.ignore_globs,

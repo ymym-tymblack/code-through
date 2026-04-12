@@ -320,7 +320,7 @@ def test_process_event_saves_sync_bundle_without_printing_full_body(tmp_path, ca
     bundle = {
         "flow": {"title": "Flow", "subtitle": "main", "body": "flow body", "metadata": {}},
         "explain": {"title": "Explain", "subtitle": "app.py", "body": "explain body", "metadata": {}},
-        "review": {"title": "Code Review", "subtitle": "quality", "body": "full review body", "metadata": {}},
+        "review": {"title": "Diff Review", "subtitle": "quality", "body": "full review body", "metadata": {}},
         "diff": {"title": "Diff", "subtitle": "app.py", "body": "diff body", "metadata": {"promotion_candidates": [{"summary": "save me"}]}} ,
     }
 
@@ -332,6 +332,57 @@ def test_process_event_saves_sync_bundle_without_printing_full_body(tmp_path, ca
     assert "full review body" not in output
     payload = watcher.store.load_latest_output(command="diff", title="Diff")
     assert payload["metadata"]["promotion_candidates"] == [{"summary": "save me"}]
+
+
+def test_generate_sync_bundle_derives_explain_targets_from_flow(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("def run():\n    return helper()\n", encoding="utf-8")
+    (tmp_path / "src" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+
+    from hermes_cli.codex_companion import generate_sync_bundle
+
+    def fake_explain_file(_workspace_root, *, target_path, symbol=None, **_kwargs):
+        label = symbol or target_path
+        return {"analysis": f"analysis for {label}"}
+
+    def fake_analyze_prompt(prompt, **_kwargs):
+        if "Target directory:" in prompt:
+            return {"analysis": "directory analysis"}
+        if "Diffs:" in prompt:
+            return {"analysis": "diff analysis"}
+        return {"analysis": "prompt analysis"}
+
+    with patch(
+        "hermes_cli.codex_companion.analyze_change_set",
+        return_value={"analysis": "review analysis", "related_files": [], "promotion_candidates": []},
+    ), patch(
+        "hermes_cli.codex_companion.explain_file",
+        side_effect=fake_explain_file,
+    ), patch(
+        "hermes_cli.codex_companion.analyze_prompt",
+        side_effect=fake_analyze_prompt,
+    ):
+        bundle = generate_sync_bundle(
+            tmp_path,
+            event={
+                "event_id": "evt-sync",
+                "workspace_root": str(tmp_path),
+                "changes": [{"path": "src/main.py"}],
+            },
+            model="anthropic/claude-opus-4.6",
+            runtime={"provider": "openrouter", "base_url": "https://example.com", "api_key": "key", "api_mode": "chat_completions"},
+            sync_kind="startup",
+        )
+
+    flow_paths = [item["path"] for item in bundle["flow"]["metadata"]["targets"]]
+    explain_targets = bundle["explain"]["metadata"]["targets"]
+    explain_file_paths = [item["path"] for item in explain_targets if item["kind"] == "file"]
+    explain_dir_paths = [item["path"] for item in explain_targets if item["kind"] == "directory"]
+
+    assert "src/main.py" in flow_paths
+    assert explain_file_paths[:1] == ["src/main.py"]
+    assert "src" in explain_dir_paths
+    assert bundle["explain"]["metadata"]["selection_reason"] == "derived from flow targets"
 
 
 def test_store_command_output_writes_readable_multiline_json(tmp_path):
@@ -370,7 +421,7 @@ def test_store_migrates_legacy_codex_companion_directory(tmp_path):
     assert (hermes_home / "store" / "outputs" / "out.json").exists()
     assert not legacy_root.exists()
 
-def test_resolve_analysis_runtime_prefers_analysis_config(monkeypatch):
+def test_resolve_analysis_runtime_prefers_fallback_runtime(monkeypatch):
     monkeypatch.setenv("LOCAL_GEMMA_KEY", "gemma-key")
 
     with patch(
@@ -386,9 +437,32 @@ def test_resolve_analysis_runtime_prefers_analysis_config(monkeypatch):
         },
     ):
         runtime = resolve_analysis_runtime(
-            fallback_runtime={"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses"},
+            fallback_runtime={"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"},
             requested_provider="openai-codex",
         )
+
+    assert runtime["provider"] == "openai-codex"
+    assert runtime["base_url"] == "https://example.com"
+    assert runtime["api_key"] == "fallback"
+    assert runtime["source"] == "main-session"
+
+
+def test_resolve_analysis_runtime_uses_analysis_config_without_fallback(monkeypatch):
+    monkeypatch.setenv("LOCAL_GEMMA_KEY", "gemma-key")
+
+    with patch(
+        "hermes_cli.codex_companion.load_config",
+        return_value={
+            "analysis": {
+                "enabled": True,
+                "provider": "custom",
+                "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "api_key_env": "LOCAL_GEMMA_KEY",
+            }
+        },
+    ):
+        runtime = resolve_analysis_runtime(requested_provider="openai-codex")
 
     assert runtime["provider"] == "openrouter"
     assert runtime["base_url"] == "http://127.0.0.1:8000/v1"

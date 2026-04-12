@@ -328,7 +328,27 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "falling back to auto provider detection" in output.lower()
     assert "No change." in output
 
-def test_analysis_runtime_can_bypass_main_chat_provider(monkeypatch):
+def test_analysis_runtime_prefers_main_session_runtime(monkeypatch):
+    cli = _import_cli()
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.api_key = "main-key"
+    shell.base_url = "https://api.example/v1"
+    shell.provider = "openai-codex"
+    shell.api_mode = "codex_responses"
+
+    monkeypatch.setattr(shell, "_ensure_runtime_credentials", lambda: True)
+
+    runtime = shell._resolve_analysis_runtime()
+
+    assert runtime is not None
+    assert runtime["provider"] == "openai-codex"
+    assert runtime["base_url"] == "https://api.example/v1"
+    assert runtime["api_key"] == "main-key"
+    assert runtime["source"] == "main-session"
+
+
+def test_analysis_runtime_falls_back_to_analysis_config(monkeypatch):
     cli = _import_cli()
 
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
@@ -336,6 +356,7 @@ def test_analysis_runtime_can_bypass_main_chat_provider(monkeypatch):
     shell.base_url = ""
     shell.provider = "openai-codex"
     shell.api_mode = "codex_responses"
+    monkeypatch.setattr(shell, "_ensure_runtime_credentials", lambda: False)
 
     monkeypatch.setattr(
         "hermes_cli.codex_companion.resolve_analysis_runtime",
@@ -354,4 +375,5 @@ def test_analysis_runtime_can_bypass_main_chat_provider(monkeypatch):
     assert runtime["provider"] == "openrouter"
     assert runtime["base_url"] == "http://127.0.0.1:11434/v1"
     assert runtime["api_key"] == ""
+    assert runtime["source"] == "analysis-config"
 

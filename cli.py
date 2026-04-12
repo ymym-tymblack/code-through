@@ -241,9 +241,9 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "analysis": {
             "enabled": True,
-            "provider": "openrouter",
-            "model": "gemma4:26b",
-            "base_url": "http://localhost:11434/v1",
+            "provider": "",
+            "model": "",
+            "base_url": "",
             "api_key_env": "",
             "bridge_enabled": True,
             "bridge_dir": ".hermes/companion",
@@ -1558,15 +1558,18 @@ class HermesCLI:
         return True
 
     def _resolve_analysis_runtime(self) -> Optional[dict[str, Any]]:
+        if self._ensure_runtime_credentials():
+            return {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+                "source": "main-session",
+            }
         try:
             from hermes_cli.codex_companion import resolve_analysis_runtime
             return resolve_analysis_runtime(
-                fallback_runtime={
-                    "api_key": self.api_key,
-                    "base_url": self.base_url,
-                    "provider": self.provider,
-                    "api_mode": self.api_mode,
-                } if self.base_url else None,
+                fallback_runtime=None,
                 requested_provider=self.requested_provider,
             )
         except Exception as exc:
@@ -3199,6 +3202,7 @@ class HermesCLI:
             max_file_bytes=int(effective_cfg.get("max_file_bytes", 200_000)),
             ignore_globs=effective_cfg.get("exclude_globs", []),
             runtime=runtime,
+            model=getattr(self, "model", None),
             natural_language=self.review_natural_language,
             on_event=_on_event,
             on_analysis=_on_analysis,
