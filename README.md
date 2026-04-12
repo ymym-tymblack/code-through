@@ -49,8 +49,9 @@ code-through-agent
 git clone https://github.com/ymym-tymblack/code-through.git
 cd code-through
 uv sync
-uv run code-through setup
-uv run code-through --workspace /path/to/workspace
+./code-through setup
+./code-through
+./code-through --workspace /path/to/workspace
 ```
 
 # Local vLLM
@@ -82,3 +83,5 @@ The included [docker-compose.yaml](/workspaces/code-through/docker-compose.yaml)
 - OpenAI-compatible API on `http://127.0.0.1:8000/v1`
 
 If you want the endpoint to require authentication, set `VLLM_API_KEY` before starting Compose and then point `analysis.api_key_env` at that env var.
+
+`./code-through` and `./hermes` both launch the same full CLI from the repo checkout, including interactive chat and slash commands such as `/review`, `/diff`, `/explain`, and `/flow`.

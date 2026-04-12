@@ -4,7 +4,7 @@ Code Through CLI Launcher
 
 This is a convenience wrapper to launch the full Code Through CLI from the
 repository checkout.
-Usage: ./hermes [options]
+Usage: ./code-through [options]
 """
 
 if __name__ == "__main__":
