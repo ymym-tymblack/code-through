@@ -1,5 +1,6 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
@@ -339,3 +340,40 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+
+def test_set_sync_pane_output_appends_recent_entries_and_updates_widget():
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._sync_pane_history_limit = 2
+    cli._sync_panes = {"flow": {"entries": []}}
+    cli._pane_widgets = {"flow": SimpleNamespace(text="")}
+
+    cli._set_sync_pane_output("flow", title="Flow Explain", subtitle="a.py", body="first body", append=True)
+    cli._set_sync_pane_output("flow", title="Flow Explain", subtitle="b.py", body="second body", append=True)
+    cli._set_sync_pane_output("flow", title="Flow Explain", subtitle="c.py", body="third body", append=True)
+
+    body = cli._sync_panes["flow"]["body"]
+    assert "a.py" not in body
+    assert "second body" in body
+    assert "third body" in body
+    assert cli._pane_widgets["flow"].text == body
+
+
+def test_set_sync_pane_output_replace_mode_overwrites_history():
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._sync_pane_history_limit = 3
+    cli._sync_panes = {"explain": {"entries": []}}
+    cli._pane_widgets = {"explain": SimpleNamespace(text="")}
+
+    cli._set_sync_pane_output("explain", title="File Explain", subtitle="old.py", body="old body", append=True)
+    cli._set_sync_pane_output("explain", title="File Explain", subtitle="fresh.py", body="fresh body", append=False)
+
+    body = cli._sync_panes["explain"]["body"]
+    assert "old.py" not in body
+    assert "fresh.py" in body
+    assert "fresh body" in body
+    assert len(cli._sync_panes["explain"]["entries"]) == 1

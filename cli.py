@@ -1388,11 +1388,12 @@ class HermesCLI:
         self._sync_latest_bundle: dict[str, dict[str, Any]] = {}
         self._sync_latest_event: Optional[dict[str, Any]] = None
         self._sync_panes: dict[str, dict[str, Any]] = {
-            "flow": {"title": "Flow", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle"},
-            "explain": {"title": "Explain", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle"},
-            "review": {"title": "Review", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle"},
-            "diff": {"title": "Diff", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle"},
+            "flow": {"title": "Flow", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
+            "explain": {"title": "Explain", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
+            "review": {"title": "Review", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
+            "diff": {"title": "Diff", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
         }
+        self._sync_pane_history_limit = 3
         self._pane_order = ["flow", "explain", "review", "diff"]
         self._pane_widgets: dict[str, Any] = {}
 
@@ -2876,7 +2877,14 @@ class HermesCLI:
 
     def _render_review_panel(self, title: str, body: str, *, subtitle: str = "") -> None:
         command = self._pane_command_from_title(title)
-        self._set_sync_pane_output(command, title=title, subtitle=subtitle, body=body, status="ok")
+        self._set_sync_pane_output(
+            command,
+            title=title,
+            subtitle=subtitle,
+            body=body,
+            status="ok",
+            append=bool(getattr(self, "_app", None)),
+        )
         if getattr(self, "_app", None):
             self._invalidate(min_interval=0)
             return
@@ -2940,6 +2948,28 @@ class HermesCLI:
         }
         return aliases.get(lowered, lowered if lowered in {"flow", "explain", "review", "diff"} else "review")
 
+    @staticmethod
+    def _format_sync_pane_entry(entry: dict[str, Any]) -> str:
+        updated = float(entry.get("updated_at") or time.time())
+        stamp = time.strftime("%H:%M:%S", time.localtime(updated))
+        title = str(entry.get("title") or "Update").strip() or "Update"
+        subtitle = str(entry.get("subtitle") or "").strip()
+        status = str(entry.get("status") or "ok").strip().lower()
+        header = f"[{stamp}] {title}"
+        if subtitle:
+            header += f" | {subtitle}"
+        if status and status != "ok":
+            header += f" | {status.upper()}"
+        body = str(entry.get("body") or "").strip() or "(No analysis generated)"
+        return f"{header}\n\n{body}"
+
+    def _compose_sync_pane_body(self, entries: list[dict[str, Any]]) -> str:
+        normalized = [self._format_sync_pane_entry(entry) for entry in entries if entry]
+        if not normalized:
+            return ""
+        separator = "\n\n" + ("-" * 72) + "\n\n"
+        return "\n\n" + separator.join(normalized)
+
     def _set_sync_pane_output(
         self,
         command: str,
@@ -2949,19 +2979,38 @@ class HermesCLI:
         body: str = "",
         status: str = "ok",
         metadata: Optional[dict[str, Any]] = None,
+        append: bool = False,
     ) -> None:
         pane = self._sync_panes.setdefault(command, {})
-        pane.update({
+        entries = list(pane.get("entries") or [])
+        timestamp = time.time()
+        entry = {
             "title": title,
             "subtitle": subtitle,
             "body": body or "",
             "status": status,
-            "updated_at": time.time(),
+            "updated_at": timestamp,
             "metadata": metadata or {},
+        }
+        if append:
+            entries.append(entry)
+            history_limit = max(1, int(getattr(self, "_sync_pane_history_limit", 3) or 3))
+            entries = entries[-history_limit:]
+        else:
+            entries = [entry] if any((title, subtitle, body, metadata, status != "idle")) else []
+        rendered_body = self._compose_sync_pane_body(entries) if entries else (body or "")
+        pane.update({
+            "title": title,
+            "subtitle": subtitle,
+            "body": rendered_body,
+            "status": status,
+            "updated_at": timestamp,
+            "metadata": metadata or {},
+            "entries": entries,
         })
         widget = self._pane_widgets.get(command)
         if widget is not None:
-            widget.text = body or ""
+            widget.text = rendered_body
 
     def _load_sync_outputs_from_store(self) -> None:
         try:
@@ -3353,6 +3402,15 @@ class HermesCLI:
                     subtitle=subtitle,
                     status="error",
                     metadata={"error": str(exc), **(metadata or {})},
+                )
+                self._set_sync_pane_output(
+                    command_name,
+                    title=title,
+                    subtitle=subtitle,
+                    body=str(exc),
+                    status="error",
+                    metadata={"error": str(exc), **(metadata or {})},
+                    append=bool(getattr(self, "_app", None)),
                 )
                 print()
                 _cprint(f"  ❌ {title} failed: {exc}")
@@ -6178,7 +6236,7 @@ class HermesCLI:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
-            return ""
+            return "message or /flow <symbol> [path], /explain <path>, /review ..., /diff [notes]"
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
