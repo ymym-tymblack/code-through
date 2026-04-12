@@ -334,7 +334,7 @@ def test_process_event_saves_sync_bundle_without_printing_full_body(tmp_path, ca
     assert payload["metadata"]["promotion_candidates"] == [{"summary": "save me"}]
 
 
-def test_generate_sync_bundle_derives_explain_targets_from_flow(tmp_path):
+def test_generate_sync_bundle_derives_explain_targets_from_llm_selected_flow(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("def run():\n    return helper()\n", encoding="utf-8")
     (tmp_path / "src" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
@@ -352,10 +352,20 @@ def test_generate_sync_bundle_derives_explain_targets_from_flow(tmp_path):
             return {"analysis": "diff analysis"}
         return {"analysis": "prompt analysis"}
 
+    planned_flow = {
+        "flow_targets": [{"path": "src/main.py", "symbol": "run", "reason": "workspace entrypoint"}],
+        "explain_targets": [],
+        "review_scope": "workspace architecture",
+        "diff_scope": "recent changes",
+    }
+
     with patch(
         "hermes_cli.codex_companion.analyze_change_set",
         return_value={"analysis": "review analysis", "related_files": [], "promotion_candidates": []},
     ), patch(
+        "hermes_cli.codex_companion.plan_sync_targets",
+        return_value=planned_flow,
+    ) as planner_mock, patch(
         "hermes_cli.codex_companion.explain_file",
         side_effect=fake_explain_file,
     ), patch(
@@ -367,21 +377,26 @@ def test_generate_sync_bundle_derives_explain_targets_from_flow(tmp_path):
             event={
                 "event_id": "evt-sync",
                 "workspace_root": str(tmp_path),
-                "changes": [{"path": "src/main.py"}],
+                "changes": [{"path": "src/helper.py"}],
             },
             model="anthropic/claude-opus-4.6",
             runtime={"provider": "openrouter", "base_url": "https://example.com", "api_key": "key", "api_mode": "chat_completions"},
             sync_kind="startup",
         )
 
-    flow_paths = [item["path"] for item in bundle["flow"]["metadata"]["targets"]]
+    planner_kwargs = planner_mock.call_args.kwargs
+    assert planner_kwargs["changed_paths"] == []
+    assert planner_kwargs["sync_kind"] == "startup"
+
+    flow_targets = bundle["flow"]["metadata"]["targets"]
     explain_targets = bundle["explain"]["metadata"]["targets"]
     explain_file_paths = [item["path"] for item in explain_targets if item["kind"] == "file"]
     explain_dir_paths = [item["path"] for item in explain_targets if item["kind"] == "directory"]
 
-    assert "src/main.py" in flow_paths
-    assert explain_file_paths[:1] == ["src/main.py"]
+    assert flow_targets == [{"path": "src/main.py", "symbol": "run", "reason": "workspace entrypoint"}]
+    assert explain_file_paths == ["src/main.py"]
     assert "src" in explain_dir_paths
+    assert bundle["flow"]["metadata"]["selection_reason"] == "workspace-based llm planner"
     assert bundle["explain"]["metadata"]["selection_reason"] == "derived from flow targets"
 
 

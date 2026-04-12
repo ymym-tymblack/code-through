@@ -1314,12 +1314,25 @@ def build_sync_planner_prompt(
         "Each flow_targets item must be an object with path, symbol, and reason.",
         "Each explain_targets item must be an object with path, kind, and reason where kind is file or directory.",
         "review_scope must be a short string. diff_scope must be a short string.",
+    ]
+    if sync_kind == "startup":
+        lines.extend([
+            "Treat the workspace itself as the analysis scope.",
+            "For flow_targets, prioritize the main entrypoint, orchestration layer, router, app factory, or central control-flow symbol for this workspace.",
+            "Do not prioritize recently changed files because startup sync is workspace-based, not diff-based.",
+            "Choose symbols that best explain how this workspace starts, routes requests, or coordinates work.",
+        ])
+    else:
+        lines.extend([
+            "Use changed paths as a strong hint, but prefer the files and symbols that best explain the current control flow.",
+        ])
+    lines.extend([
         f"Workspace: {workspace_root}",
         f"Sync kind: {sync_kind}",
         f"Changed paths: {', '.join(changed_paths) if changed_paths else '(none)'}",
         "",
         "Directories:",
-    ]
+    ])
     for rel_dir in project_context.get("directories", []):
         lines.append(f"- {rel_dir}")
     lines.extend(["", "Representative files:"])
@@ -1510,10 +1523,29 @@ def _select_flow_targets(
     *,
     changed_paths: Sequence[str],
     ignore_globs: Optional[Sequence[str]] = None,
+    model: Optional[str] = None,
+    runtime: Optional[dict[str, Any]] = None,
+    natural_language: Optional[str] = None,
     sync_kind: str = 'incremental',
 ) -> list[dict[str, str]]:
     sync_kind = _normalize_sync_kind(sync_kind)
     limit = DEFAULT_STARTUP_FLOW_TARGETS if sync_kind == 'startup' else DEFAULT_INCREMENTAL_FLOW_TARGETS
+
+    if sync_kind == 'startup':
+        project_context = collect_project_summary(workspace_root)
+        planned = plan_sync_targets(
+            workspace_root,
+            project_context=project_context,
+            changed_paths=[],
+            model=model,
+            runtime=runtime,
+            natural_language=natural_language,
+            sync_kind='startup',
+        )
+        planned_targets = list(planned.get('flow_targets') or [])
+        if planned_targets:
+            return planned_targets[:limit]
+
     file_limit = max(limit * 3, DEFAULT_STARTUP_FILE_TARGETS)
     candidates = _candidate_sync_files(
         workspace_root,
@@ -1525,6 +1557,8 @@ def _select_flow_targets(
     for rel_path in candidates:
         symbol = Path(rel_path).stem
         reason = 'changed file' if rel_path in changed_paths else 'representative file'
+        if sync_kind == 'startup':
+            reason = 'workspace representative file'
         if _looks_like_entrypoint(rel_path):
             reason = 'entrypoint-like file'
         targets.append({'path': rel_path, 'symbol': symbol, 'reason': reason})
@@ -1636,6 +1670,9 @@ def generate_sync_bundle(
         workspace_root,
         changed_paths=changed_paths,
         ignore_globs=ignore_globs,
+        model=model,
+        runtime=runtime,
+        natural_language=natural_language,
         sync_kind=sync_kind,
     )
     flow_parts: list[str] = []
@@ -1656,7 +1693,7 @@ def generate_sync_bundle(
         'metadata': {
             'sync_kind': sync_kind,
             'targets': flow_targets,
-            'selection_reason': 'changed files first, then representative files',
+            'selection_reason': 'workspace-based llm planner' if sync_kind == 'startup' else 'changed files first, then representative files',
         },
     }
 
