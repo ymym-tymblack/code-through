@@ -1000,12 +1000,12 @@ def resolve_analysis_runtime(
             runtime["source"] = "analysis-config"
             return runtime
 
+    if fallback_runtime:
+        return dict(fallback_runtime)
+
     auto_runtime = _detect_local_analysis_runtime()
     if auto_runtime is not None:
         return auto_runtime
-
-    if fallback_runtime:
-        return dict(fallback_runtime)
 
     return resolve_runtime_provider(requested=requested_provider)
 
@@ -1291,22 +1291,28 @@ def _collect_workspace_file_paths(workspace_root: Path, *, max_files: int = 4000
     return rel_paths
 
 
-def _collect_readme_text(workspace_root: Path, *, max_files: int = 6, max_chars: int = 32_000) -> str:
-    readmes: list[tuple[int, str]] = []
+def _collect_readme_text(workspace_root: Path, *, max_files: int = 8, max_chars: int = 32_000) -> str:
+    context_docs: list[tuple[int, str]] = []
     for rel_path in _collect_workspace_file_paths(workspace_root, max_files=400):
         p = Path(rel_path)
-        if not p.name.lower().startswith("readme"):
+        lower_name = p.name.lower()
+        if not (
+            lower_name.startswith("readme")
+            or lower_name == "agents.md"
+            or lower_name == "soul.md"
+            or lower_name == ".cursorrules"
+        ):
             continue
         depth = len(p.parts)
-        readmes.append((depth, rel_path))
+        context_docs.append((depth, rel_path))
     chunks: list[str] = []
     total = 0
-    for _depth, rel_path in sorted(readmes)[:max_files]:
+    for _depth, rel_path in sorted(context_docs)[:max_files]:
         text = _load_text_file(workspace_root / rel_path, max_file_bytes=DEFAULT_MAX_FILE_BYTES)
         if not text:
             continue
         excerpt = _truncate_text(text, min(8_000, max_chars - total))
-        chunks.append(excerpt)
+        chunks.append(f"## {rel_path}\n{excerpt}")
         total += len(excerpt)
         if total >= max_chars:
             break
@@ -1557,7 +1563,7 @@ def build_sync_planner_prompt(
             "Treat the workspace itself as the analysis scope.",
             "For flow_targets, prioritize the main entrypoint, orchestration layer, router, app factory, or central control-flow symbol for this workspace.",
             "Do not prioritize recently changed files because startup sync is workspace-based, not diff-based.",
-            "Prefer files explicitly recommended in README or getting-started docs, startup scripts, and the code they dispatch into.",
+            "Prefer files explicitly recommended in README, AGENTS.md, or getting-started docs, startup scripts, and the code they dispatch into.",
             "Choose symbols that best explain how this workspace starts, routes requests, or coordinates work.",
         ])
     else:

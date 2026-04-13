@@ -428,6 +428,29 @@ def test_default_sync_plan_prefers_readme_guided_dispatch_target(tmp_path):
     assert "README" in first["reason"] or "dispatched" in first["reason"]
 
 
+def test_default_sync_plan_prefers_agents_guided_target(tmp_path):
+    import hermes_cli.codex_companion as companion
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "AGENTS.md").write_text(
+        "Main orchestration lives in `tools/dispatcher.py`. Start from `dispatch`.",
+        encoding="utf-8",
+    )
+    (tmp_path / "tools" / "dispatcher.py").write_text(
+        "def dispatch():\n    return run()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+
+    project_context = companion.collect_project_summary(tmp_path)
+    plan = companion._default_sync_plan(tmp_path, project_context=project_context, changed_paths=[])
+
+    first = plan["flow_targets"][0]
+    assert first["path"] == "tools/dispatcher.py"
+    assert first["symbol"] == "dispatch"
+
+
 def test_default_sync_plan_picks_main_like_source_without_readme(tmp_path):
     import hermes_cli.codex_companion as companion
 
@@ -497,7 +520,7 @@ def test_resolve_analysis_runtime_prefers_explicit_analysis_config_over_fallback
     assert runtime["source"] == "analysis-config"
 
 
-def test_resolve_analysis_runtime_auto_detects_local_vllm_before_fallback(monkeypatch):
+def test_resolve_analysis_runtime_prefers_fallback_before_local_vllm_auto_detect(monkeypatch):
     monkeypatch.setenv("VLLM_API_KEY", "local-vllm")
 
     with patch("hermes_cli.codex_companion.load_config", return_value={}),          patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=False),          patch("hermes_cli.codex_companion.fetch_api_models", return_value=["local-gemma"]) as fetch_mock:
@@ -506,11 +529,8 @@ def test_resolve_analysis_runtime_auto_detects_local_vllm_before_fallback(monkey
             requested_provider="openai-codex",
         )
 
-    assert fetch_mock.call_args.args[0] == "local-vllm"
-    assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
-    assert runtime["api_key"] == "local-vllm"
-    assert runtime["model"] == "local-gemma"
-    assert runtime["source"] == "analysis-auto-local"
+    assert runtime == {"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"}
+    fetch_mock.assert_not_called()
 
 
 def test_resolve_analysis_runtime_falls_back_when_local_vllm_is_unavailable():
