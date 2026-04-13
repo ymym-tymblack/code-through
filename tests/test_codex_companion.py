@@ -13,6 +13,7 @@ from hermes_cli.codex_companion import (
     collect_workspace_snapshot,
     detect_changes,
     extract_promotion_candidates,
+    analyze_prompt,
     resolve_analysis_runtime,
     run_codex_watch,
 )
@@ -436,51 +437,60 @@ def test_store_migrates_legacy_codex_companion_directory(tmp_path):
     assert (hermes_home / "store" / "outputs" / "out.json").exists()
     assert not legacy_root.exists()
 
-def test_resolve_analysis_runtime_prefers_fallback_runtime(monkeypatch):
+def test_resolve_analysis_runtime_prefers_explicit_analysis_config_over_fallback(monkeypatch):
     monkeypatch.setenv("LOCAL_GEMMA_KEY", "gemma-key")
 
-    with patch(
-        "hermes_cli.codex_companion.load_config",
-        return_value={
-            "analysis": {
-                "enabled": True,
-                "provider": "custom",
-                "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo",
-                "base_url": "http://127.0.0.1:8000/v1",
-                "api_key_env": "LOCAL_GEMMA_KEY",
-            }
-        },
-    ):
+    with patch("hermes_cli.codex_companion.load_config", return_value={"analysis": {"enabled": True, "provider": "custom", "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo", "base_url": "http://127.0.0.1:8000/v1", "api_key_env": "LOCAL_GEMMA_KEY"}}), \
+         patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=True):
         runtime = resolve_analysis_runtime(
             fallback_runtime={"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"},
             requested_provider="openai-codex",
         )
 
-    assert runtime["provider"] == "openai-codex"
-    assert runtime["base_url"] == "https://example.com"
-    assert runtime["api_key"] == "fallback"
-    assert runtime["source"] == "main-session"
-
-
-def test_resolve_analysis_runtime_uses_analysis_config_without_fallback(monkeypatch):
-    monkeypatch.setenv("LOCAL_GEMMA_KEY", "gemma-key")
-
-    with patch(
-        "hermes_cli.codex_companion.load_config",
-        return_value={
-            "analysis": {
-                "enabled": True,
-                "provider": "custom",
-                "model": "LilaRest/gemma-4-31B-it-NVFP4-turbo",
-                "base_url": "http://127.0.0.1:8000/v1",
-                "api_key_env": "LOCAL_GEMMA_KEY",
-            }
-        },
-    ):
-        runtime = resolve_analysis_runtime(requested_provider="openai-codex")
-
-    assert runtime["provider"] == "openrouter"
     assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
     assert runtime["api_key"] == "gemma-key"
+    assert runtime["model"] == "LilaRest/gemma-4-31B-it-NVFP4-turbo"
     assert runtime["source"] == "analysis-config"
+
+
+def test_resolve_analysis_runtime_auto_detects_local_vllm_before_fallback():
+    with patch("hermes_cli.codex_companion.load_config", return_value={}), \
+         patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=False), \
+         patch("hermes_cli.codex_companion.fetch_api_models", return_value=["local-gemma"]):
+        runtime = resolve_analysis_runtime(
+            fallback_runtime={"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"},
+            requested_provider="openai-codex",
+        )
+
+    assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
+    assert runtime["api_key"] == ""
+    assert runtime["model"] == "local-gemma"
+    assert runtime["source"] == "analysis-auto-local"
+
+
+def test_resolve_analysis_runtime_falls_back_when_local_vllm_is_unavailable():
+    fallback = {"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"}
+
+    with patch("hermes_cli.codex_companion.load_config", return_value={}), \
+         patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=False), \
+         patch("hermes_cli.codex_companion.fetch_api_models", return_value=None):
+        runtime = resolve_analysis_runtime(fallback_runtime=fallback, requested_provider="openai-codex")
+
+    assert runtime == fallback
+
+
+def test_analyze_prompt_prefers_runtime_model_over_main_model():
+    agent_instance = MagicMock()
+    agent_instance.run_conversation.return_value = {"final_response": "ok"}
+
+    with patch("run_agent.AIAgent", return_value=agent_instance) as agent_cls:
+        result = analyze_prompt(
+            "Explain this",
+            model="gpt-5.4",
+            runtime={"provider": "custom", "base_url": "http://127.0.0.1:8000/v1", "api_key": "", "api_mode": "chat_completions", "model": "local-gemma"},
+        )
+
+    assert agent_cls.call_args.kwargs["model"] == "local-gemma"
+    assert result["model"] == "local-gemma"
+    assert result["analysis"] == "ok"
 

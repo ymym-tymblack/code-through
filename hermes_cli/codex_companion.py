@@ -20,11 +20,14 @@ import shutil
 import threading
 import time
 import uuid
+
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence
 
-from hermes_cli.config import ensure_hermes_home, get_hermes_home, load_config
+from hermes_cli.config import ensure_hermes_home, get_config_path, get_hermes_home, load_config
+from hermes_cli.models import fetch_api_models
 from hermes_cli.runtime_provider import (
     format_runtime_provider_error,
     resolve_runtime_provider,
@@ -898,6 +901,24 @@ def _analysis_config() -> dict[str, Any]:
 
 
 
+def _raw_user_config() -> dict[str, Any]:
+    config_path = get_config_path()
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    return dict(loaded) if isinstance(loaded, dict) else {}
+
+
+
+def _has_explicit_analysis_config() -> bool:
+    return "analysis" in _raw_user_config()
+
+
+
 def _default_analysis_model() -> str:
     analysis_cfg = _analysis_config()
     configured = str(analysis_cfg.get("model") or "").strip()
@@ -913,36 +934,71 @@ def _default_analysis_model() -> str:
 
 
 
+def _detect_local_analysis_runtime() -> Optional[dict[str, Any]]:
+    base_url = "http://127.0.0.1:8000/v1"
+    models = fetch_api_models("", base_url, timeout=0.4) or []
+    selected_model = next((model.strip() for model in models if isinstance(model, str) and model.strip()), "")
+    if not selected_model:
+        return None
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested="custom",
+            explicit_base_url=base_url,
+        )
+    except Exception:
+        return None
+    runtime["base_url"] = base_url
+    runtime["api_key"] = ""
+    runtime["api_mode"] = "chat_completions"
+    runtime["model"] = selected_model
+    runtime["source"] = "analysis-auto-local"
+    return runtime
+
+
+
 def resolve_analysis_runtime(
     *,
     fallback_runtime: Optional[dict[str, Any]] = None,
     requested_provider: Optional[str] = None,
 ) -> dict[str, Any]:
-    if fallback_runtime:
-        return dict(fallback_runtime)
-
     analysis_cfg = _analysis_config()
-    if analysis_cfg.get("enabled", True) is False:
+    explicit_analysis = _has_explicit_analysis_config()
+
+    if explicit_analysis and analysis_cfg.get("enabled", True) is False:
+        if fallback_runtime:
+            return dict(fallback_runtime)
         return resolve_runtime_provider(requested=requested_provider)
 
-    provider = str(analysis_cfg.get("provider") or "").strip().lower()
-    base_url = str(analysis_cfg.get("base_url") or "").strip().rstrip("/")
-    api_key_env = str(analysis_cfg.get("api_key_env") or "").strip()
-    explicit_api_key = os.getenv(api_key_env, "").strip() if api_key_env else ""
+    if explicit_analysis:
+        provider = str(analysis_cfg.get("provider") or "").strip().lower()
+        base_url = str(analysis_cfg.get("base_url") or "").strip().rstrip("/")
+        api_key_env = str(analysis_cfg.get("api_key_env") or "").strip()
+        explicit_api_key = os.getenv(api_key_env, "").strip() if api_key_env else ""
+        configured_model = str(analysis_cfg.get("model") or "").strip()
 
-    if provider or base_url or api_key_env:
-        runtime = resolve_runtime_provider(
-            requested=provider or requested_provider or "openrouter",
-            explicit_api_key=explicit_api_key or None,
-            explicit_base_url=base_url or None,
-        )
-        if base_url:
-            runtime["base_url"] = base_url
-            runtime["api_mode"] = "chat_completions"
-        if api_key_env or base_url:
-            runtime["api_key"] = explicit_api_key
-        runtime["source"] = "analysis-config"
-        return runtime
+        if provider or base_url or api_key_env:
+            runtime = resolve_runtime_provider(
+                requested=provider or requested_provider or "openrouter",
+                explicit_api_key=explicit_api_key or None,
+                explicit_base_url=base_url or None,
+            )
+            if base_url:
+                runtime["base_url"] = base_url
+                runtime["api_mode"] = "chat_completions"
+            if api_key_env or base_url:
+                runtime["api_key"] = explicit_api_key
+            if configured_model:
+                runtime["model"] = configured_model
+            runtime["source"] = "analysis-config"
+            return runtime
+
+    auto_runtime = _detect_local_analysis_runtime()
+    if auto_runtime is not None:
+        return auto_runtime
+
+    if fallback_runtime:
+        return dict(fallback_runtime)
 
     return resolve_runtime_provider(requested=requested_provider)
 
@@ -1798,13 +1854,14 @@ def analyze_prompt(
 ) -> dict:
     from run_agent import AIAgent
 
-    runtime = resolve_analysis_runtime(fallback_runtime=runtime)
+    runtime = dict(runtime) if runtime else resolve_analysis_runtime()
+    effective_model = str(runtime.get("model") or model or _default_analysis_model()).strip() or _default_analysis_model()
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
-        model=model or _default_analysis_model(),
+        model=effective_model,
         enabled_toolsets=["file", "session_search"],
         quiet_mode=True,
         platform="cli",
@@ -1814,7 +1871,7 @@ def analyze_prompt(
     result = agent.run_conversation(prompt)
     response_text = result.get("final_response") if isinstance(result, dict) else str(result)
     return {
-        "model": model or _default_analysis_model(),
+        "model": effective_model,
         "provider": runtime.get("provider"),
         "analysis": response_text or "",
         "timestamp": time.time(),
