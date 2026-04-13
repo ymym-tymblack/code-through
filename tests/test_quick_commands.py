@@ -215,6 +215,36 @@ class TestCLIQuickCommands:
         assert kwargs["ignore_globs"] == ["memo/**", "notes/*.md"]
         assert kwargs["analyze"] is False
 
+    def test_start_review_watcher_runs_startup_sync_before_watch_loop(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._review_thread = None
+        cli._ensure_runtime_credentials = MagicMock(return_value=True)
+        cli.workspace_root = MagicMock()
+        cli.api_key = "key"
+        cli.base_url = "https://example.com/v1"
+        cli.provider = "openrouter"
+        cli.api_mode = "chat_completions"
+        cli.review_natural_language = "en"
+        cli._app = None
+        cli.session_id = "sess"
+        cli._sync_panes = {"flow": {}, "explain": {}, "review": {}, "diff": {}}
+
+        watcher_instance = MagicMock()
+        thread_instance = MagicMock()
+
+        with patch("cli.CLI_CONFIG", {"review": {}}), \
+             patch("cli.threading.Thread", return_value=thread_instance) as thread_cls, \
+             patch("hermes_cli.codex_companion.CodexCompanionWatcher", return_value=watcher_instance):
+            assert cli._start_review_watcher() is True
+
+        target = thread_cls.call_args.kwargs["target"]
+        target()
+
+        watcher_instance.run_startup_sync.assert_called_once()
+        watcher_instance.run.assert_called_once()
+
     def test_review_exclude_add_updates_config_and_prints(self):
         from cli import HermesCLI
 

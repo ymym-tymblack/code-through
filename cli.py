@@ -1386,7 +1386,7 @@ class HermesCLI:
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
         self._sync_enabled = True
-        self._auto_sync_commands = {"review": True, "diff": True, "explain": True, "flow": False}
+        self._auto_sync_commands = {"review": True, "diff": True, "explain": True, "flow": True}
         self._auto_analysis_queue: queue.Queue = queue.Queue()
         self._auto_analysis_thread: Optional[threading.Thread] = None
         self._auto_analysis_pending: set[str] = set()
@@ -3578,6 +3578,7 @@ class HermesCLI:
 
         def _run() -> None:
             try:
+                self._review_watcher.run_startup_sync()
                 self._review_watcher.run()
             except Exception as exc:
                 print()
@@ -3612,7 +3613,7 @@ class HermesCLI:
             self._review_enabled = True
             self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. review/diff/explain automation is on; flow stays manual.")
+                _cprint("  ✅ File watching enabled. flow/explain/review/diff automation is on.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -3630,7 +3631,7 @@ class HermesCLI:
             return
         if action == "now":
             self._schedule_auto_analyses(self._review_latest_event)
-            _cprint("  Queued automatic review/diff/explain refresh tasks.")
+            _cprint("  Queued automatic flow/explain/review/diff refresh tasks.")
             return
         if action == "last":
             target = parts[2].strip().lower() if len(parts) > 2 else "review"
@@ -3989,7 +3990,7 @@ class HermesCLI:
             self._review_enabled = True
             self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. review/diff/explain automation is on; flow stays manual.")
+                _cprint("  ✅ File watching enabled. flow/explain/review/diff automation is on.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -5955,11 +5956,11 @@ class HermesCLI:
         self.console.print()
         if self._sync_enabled or self._review_enabled:
             if self._start_review_watcher():
-                _cprint("  review/diff/explain automation is on. Set a flow target with /flow set <path>; flow itself stays manual.")
+                _cprint("  flow/explain/review/diff automation is on. Use /sync last flow if you want to reopen the latest flow pane output.")
             else:
                 _cprint("  ⚠️  Automatic pane updates could not start; use /sync on after fixing auth.")
         else:
-            _cprint("  2x2 panes start idle. Use /flow set <path>, /explain, /review, and /diff manually from the prompt below.")
+            _cprint("  2x2 panes start idle until the first sync completes. You can still run /flow, /explain, /review, and /diff manually.")
 
         # State for async operation
         self._agent_running = False
