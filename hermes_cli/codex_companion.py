@@ -1303,7 +1303,7 @@ def _collect_readme_text(workspace_root: Path, *, max_files: int = 8, max_chars:
         lower_name = p.name.lower()
         if not (
             lower_name.startswith("readme")
-            or lower_name == "agents.md"
+            or lower_name.startswith("agents")
             or lower_name == "soul.md"
             or lower_name == ".cursorrules"
         ):
@@ -1797,12 +1797,55 @@ def _select_flow_targets(
     model: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
     natural_language: Optional[str] = None,
-    sync_kind: str = 'incremental',
+    sync_kind: str = "incremental",
 ) -> list[dict[str, str]]:
     sync_kind = _normalize_sync_kind(sync_kind)
-    limit = DEFAULT_STARTUP_FLOW_TARGETS if sync_kind == 'startup' else DEFAULT_INCREMENTAL_FLOW_TARGETS
+    limit = DEFAULT_STARTUP_FLOW_TARGETS if sync_kind == "startup" else DEFAULT_INCREMENTAL_FLOW_TARGETS
 
-    if sync_kind == 'startup':
+    def _doc_references(doc_text: str, available_paths: set[str]) -> set[str]:
+        if not doc_text or not available_paths:
+            return set()
+
+        refs: set[str] = set()
+
+        def _try_add(raw: str) -> None:
+            token = str(raw or "").strip().strip("`\"'")
+            if not token:
+                return
+            token = token.split("#", 1)[0].split("?", 1)[0].strip()
+            token = token.strip(".,:;()[]{}")
+            if not token or "://" in token:
+                return
+            normalized = token.replace("\\", "/")
+            if normalized.startswith("/"):
+                try:
+                    rel = str(Path(normalized).resolve().relative_to(workspace_root.resolve()))
+                except Exception:
+                    return
+            else:
+                rel = normalized.lstrip("./")
+            if rel in available_paths:
+                refs.add(rel)
+
+        for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", doc_text):
+            _try_add(match.group(1))
+            if len(refs) >= 160:
+                return refs
+
+        for match in re.finditer(r"`([^`]+)`", doc_text):
+            _try_add(match.group(1))
+            if len(refs) >= 160:
+                return refs
+
+        token_pattern = re.compile(r"(?<![A-Za-z0-9_])(?:\./|\.\./)?[A-Za-z0-9_./-]+\.[A-Za-z0-9_+-]+(?![A-Za-z0-9_])")
+        for match in token_pattern.finditer(doc_text):
+            _try_add(match.group(0))
+            if len(refs) >= 160:
+                break
+
+        return refs
+
+    if sync_kind == "startup":
         project_context = collect_project_summary(workspace_root)
         planned = plan_sync_targets(
             workspace_root,
@@ -1811,11 +1854,73 @@ def _select_flow_targets(
             model=model,
             runtime=runtime,
             natural_language=natural_language,
-            sync_kind='startup',
+            sync_kind="startup",
         )
-        planned_targets = list(planned.get('flow_targets') or [])
-        if planned_targets:
-            return planned_targets[:limit]
+        planned_targets = list(planned.get("flow_targets") or [])
+
+        guide_text = _collect_readme_text(workspace_root)
+        all_candidates: list[str] = []
+        for rel_path in _collect_workspace_file_paths(workspace_root, max_files=4000):
+            target = (workspace_root / rel_path).resolve()
+            if not target.is_file() or not _is_probably_flow_source(rel_path):
+                continue
+            if should_ignore_review_path(target, workspace_root):
+                continue
+            if ignore_globs and _path_matches_any_glob(Path(rel_path), ignore_globs):
+                continue
+            if _load_text_file(target, max_file_bytes=DEFAULT_MAX_FILE_BYTES) is None:
+                continue
+            all_candidates.append(rel_path)
+
+        available_paths = set(all_candidates)
+        doc_refs = _doc_references(guide_text, available_paths)
+
+        ranked_candidates = sorted(
+            all_candidates,
+            key=lambda rel_path: (
+                -(
+                    _flow_candidate_score(rel_path, readme_text=guide_text, changed=False)
+                    + (120 if rel_path in doc_refs else 0)
+                    + (25 if _looks_like_entrypoint(rel_path) else 0)
+                ),
+                len(Path(rel_path).parts),
+                rel_path,
+            ),
+        )
+
+        targets: list[dict[str, str]] = []
+        seen_paths: set[str] = set()
+
+        for item in planned_targets:
+            rel_path = str(item.get("path") or "").strip()
+            symbol = str(item.get("symbol") or "").strip()
+            reason = str(item.get("reason") or "planned flow target")
+            if not rel_path or rel_path in seen_paths:
+                continue
+            if rel_path not in available_paths:
+                continue
+            target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
+            if symbol:
+                target["symbol"] = symbol
+            seen_paths.add(target["path"])
+            targets.append(target)
+            if len(targets) >= limit:
+                return targets
+
+        for rel_path in ranked_candidates:
+            if rel_path in seen_paths:
+                continue
+            reason = "doc-guided entrypoint" if rel_path in doc_refs else "workspace representative file"
+            target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
+            if target["path"] in seen_paths:
+                continue
+            seen_paths.add(target["path"])
+            targets.append(target)
+            if len(targets) >= limit:
+                break
+
+        if targets:
+            return targets
 
     file_limit = max(limit * 3, DEFAULT_STARTUP_FILE_TARGETS)
     candidates = _candidate_sync_files(
@@ -1824,7 +1929,7 @@ def _select_flow_targets(
         ignore_globs=ignore_globs,
         limit=file_limit,
     )
-    readme_text = _collect_readme_text(workspace_root) if sync_kind == 'startup' else ""
+    readme_text = _collect_readme_text(workspace_root) if sync_kind == "startup" else ""
     available_paths = set(candidates)
     ranked_candidates = sorted(
         candidates,
@@ -1833,18 +1938,18 @@ def _select_flow_targets(
     targets: list[dict[str, str]] = []
     seen_paths: set[str] = set()
     for rel_path in ranked_candidates:
-        reason = 'changed file' if rel_path in changed_paths else 'representative file'
-        if sync_kind == 'startup':
+        reason = "changed file" if rel_path in changed_paths else "representative file"
+        if sync_kind == "startup":
             if _readme_mention_score(readme_text, rel_path):
-                reason = 'README-guided entrypoint'
+                reason = "README-guided entrypoint"
             else:
-                reason = 'workspace representative file'
+                reason = "workspace representative file"
         elif _looks_like_entrypoint(rel_path):
-            reason = 'entrypoint-like file'
+            reason = "entrypoint-like file"
         target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
-        if target['path'] in seen_paths:
+        if target["path"] in seen_paths:
             continue
-        seen_paths.add(target['path'])
+        seen_paths.add(target["path"])
         targets.append(target)
         if len(targets) >= limit:
             break
