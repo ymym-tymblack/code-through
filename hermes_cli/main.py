@@ -509,6 +509,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "workspace": getattr(args, "workspace", None),
+        "analysis_language": getattr(args, "analysis_language", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -2326,7 +2327,15 @@ For more help on a command:
         default=None,
         help="Target workspace directory to edit/review instead of the current directory"
     )
-    
+    parser.add_argument(
+        "--analysis-language",
+        "--review-language",
+        dest="analysis_language",
+        choices=["en", "ja"],
+        default=None,
+        help="Language for analysis output in flow/explain/review/diff (en or ja)"
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
     # =========================================================================
@@ -2354,6 +2363,14 @@ For more help on a command:
         choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn"],
         default=None,
         help="Inference provider (default: auto)"
+    )
+    chat_parser.add_argument(
+        "--analysis-language",
+        "--review-language",
+        dest="analysis_language",
+        choices=["en", "ja"],
+        default=None,
+        help="Language for analysis output in flow/explain/review/diff (en or ja)"
     )
     chat_parser.add_argument(
         "-v", "--verbose",

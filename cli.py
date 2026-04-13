@@ -1172,6 +1172,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        analysis_language: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1187,6 +1188,7 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            analysis_language: Analysis output language for flow/explain/review/diff (en or ja)
         """
         # Initialize Rich console
         self.console = Console()
@@ -1287,7 +1289,7 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.review_natural_language = _normalize_natural_language(
-            CLI_CONFIG.get("review", {}).get("natural_language", "en")
+            analysis_language or CLI_CONFIG.get("review", {}).get("natural_language", "en")
         )
         self.review_promotion_mode = str(
             CLI_CONFIG.get("review", {}).get("promotion_mode", "semi_auto")
@@ -7243,6 +7245,8 @@ def main(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     workspace: str = None,
+    analysis_language: str = None,
+    review_language: str = None,
 ):
     """
     Code Through CLI - Interactive AI Assistant
@@ -7264,6 +7268,8 @@ def main(
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
         workspace: Target workspace directory for editing/review
+        analysis_language: Analysis output language for flow/explain/review/diff (en or ja)
+        review_language: Alias of analysis_language (en or ja)
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -7327,6 +7333,8 @@ def main(
     # Handle query shorthand
     query = query or q
     
+    effective_analysis_language = analysis_language or review_language
+
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
@@ -7362,6 +7370,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        analysis_language=effective_analysis_language,
     )
 
     # Inject worktree context into agent's system prompt
