@@ -961,6 +961,7 @@ def _detect_local_analysis_runtime() -> Optional[dict[str, Any]]:
     runtime["api_key"] = api_key
     runtime["api_mode"] = "chat_completions"
     runtime["model"] = selected_model
+    runtime["provider"] = "custom"
     runtime["source"] = "analysis-auto-local"
     return runtime
 
@@ -999,6 +1000,8 @@ def resolve_analysis_runtime(
                 runtime["api_key"] = explicit_api_key
             if configured_model:
                 runtime["model"] = configured_model
+            if provider == "custom" or (base_url and "openrouter.ai" not in base_url):
+                runtime["provider"] = "custom"
             runtime["source"] = "analysis-config"
             return runtime
 
@@ -2090,17 +2093,36 @@ def find_symbol_candidates(
     return matches
 
 
+def _runtime_display_provider(runtime: Optional[dict[str, Any]]) -> str:
+    runtime = dict(runtime or {})
+    provider = str(runtime.get("provider") or "").strip().lower()
+    base_url = str(runtime.get("base_url") or "").strip().lower()
+    if provider == "openrouter" and base_url and "openrouter.ai" not in base_url:
+        return "custom"
+    if provider:
+        return provider
+    if base_url:
+        return "custom"
+    return "openrouter"
+
+
 def analyze_prompt(
     prompt: str,
     *,
     model: Optional[str] = None,
     session_id: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
+    thinking_callback: Optional[Callable[[str], None]] = None,
+    tool_progress_callback: Optional[Callable[..., None]] = None,
 ) -> dict:
     from run_agent import AIAgent
 
     runtime = dict(runtime) if runtime else resolve_analysis_runtime()
     effective_model = str(runtime.get("model") or model or _default_analysis_model()).strip() or _default_analysis_model()
+    if thinking_callback is None:
+        def _noop_thinking_callback(_text: str) -> None:
+            return
+        thinking_callback = _noop_thinking_callback
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2112,12 +2134,14 @@ def analyze_prompt(
         platform="cli",
         session_id=session_id or f"store-{uuid.uuid4().hex}",
         skip_memory=True,
+        thinking_callback=thinking_callback,
+        tool_progress_callback=tool_progress_callback,
     )
     result = agent.run_conversation(prompt)
     response_text = result.get("final_response") if isinstance(result, dict) else str(result)
     return {
         "model": effective_model,
-        "provider": runtime.get("provider"),
+        "provider": _runtime_display_provider(runtime),
         "base_url": runtime.get("base_url"),
         "analysis": response_text or "",
         "timestamp": time.time(),
@@ -2131,6 +2155,8 @@ def analyze_change_set(
     runtime: Optional[dict[str, Any]] = None,
     natural_language: Optional[str] = None,
     ignore_globs: Optional[Sequence[str]] = None,
+    thinking_callback: Optional[Callable[[str], None]] = None,
+    tool_progress_callback: Optional[Callable[..., None]] = None,
 ) -> dict:
     event = dict(event)
     root = Path(event["workspace_root"])
@@ -2151,6 +2177,8 @@ def analyze_change_set(
         model=model,
         session_id=f"store-{event['event_id']}",
         runtime=runtime,
+        thinking_callback=thinking_callback,
+        tool_progress_callback=tool_progress_callback,
     )
     promotion_candidates = extract_promotion_candidates(
         result.get("analysis", ""),

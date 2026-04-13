@@ -1364,6 +1364,9 @@ class HermesCLI:
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._command_running = False
         self._command_status = ""
+        self._analysis_active = 0
+        self._analysis_activity_label = ""
+        self._analysis_lock = threading.Lock()
         self._attached_images: list[Path] = []
         self._image_counter = 0
 
@@ -2977,6 +2980,8 @@ class HermesCLI:
         provider = str(metadata.get("provider") or "").strip()
         model = str(metadata.get("model") or "").strip()
         base_url = str(metadata.get("base_url") or "").strip()
+        if provider.lower() == "openrouter" and base_url and "openrouter.ai" not in base_url.lower():
+            provider = "custom"
         if not (provider or model or base_url):
             return ""
         base_hint = ""
@@ -3360,6 +3365,85 @@ class HermesCLI:
             if target:
                 self._enqueue_auto_analysis("auto:explain", lambda target_path=target: self._execute_explain_analysis(target_path, auto_generated=True))
 
+    def _begin_analysis_activity(
+        self,
+        *,
+        command_name: str,
+        title: str,
+        subtitle: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        with self._analysis_lock:
+            self._analysis_active += 1
+            label = f"{command_name}: {title}"
+            self._analysis_activity_label = label
+            self._spinner_text = f"⚙ {label}"
+
+        pane_metadata = dict(metadata or {})
+        if not pane_metadata.get("provider") or not pane_metadata.get("model"):
+            runtime = self._resolve_analysis_runtime()
+            if runtime:
+                pane_metadata.setdefault("provider", runtime.get("provider"))
+                pane_metadata.setdefault("model", runtime.get("model") or self.model)
+                pane_metadata.setdefault("base_url", runtime.get("base_url"))
+        self._set_sync_pane_output(
+            command_name,
+            title=title,
+            subtitle=subtitle,
+            body="Running analysis...",
+            status="running",
+            metadata=pane_metadata,
+            append=bool(getattr(self, "_app", None)),
+        )
+        self._invalidate(min_interval=0.0)
+
+    def _update_analysis_activity(self, text: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117] + "..."
+        with self._analysis_lock:
+            if self._analysis_active <= 0:
+                return
+            label = self._analysis_activity_label or "analysis"
+            self._spinner_text = f"⚙ {label} · {cleaned}"
+        self._invalidate(min_interval=0.0)
+
+    def _end_analysis_activity(self) -> None:
+        with self._analysis_lock:
+            self._analysis_active = max(0, self._analysis_active - 1)
+            if self._analysis_active > 0:
+                return
+            self._analysis_activity_label = ""
+            if not self._agent_running and not self._command_running:
+                self._spinner_text = ""
+        self._invalidate(min_interval=0.0)
+
+    def _make_analysis_callbacks(self) -> tuple[Callable[[str], None], Callable[..., None]]:
+        def _thinking_callback(text: str) -> None:
+            first = str(text or "").strip().splitlines()
+            if first:
+                self._update_analysis_activity(first[0])
+
+        def _tool_progress_callback(function_name: str, preview: str = "", function_args: Optional[dict] = None) -> None:
+            name = str(function_name or "").strip()
+            if not name:
+                return
+            if name == "_thinking":
+                if preview:
+                    self._update_analysis_activity(str(preview))
+                return
+            if name.startswith("_"):
+                return
+            detail = f"tool:{name}"
+            pv = str(preview or "").strip()
+            if pv:
+                detail = f"{detail} · {pv}"
+            self._update_analysis_activity(detail)
+
+        return _thinking_callback, _tool_progress_callback
+
     def _execute_review_prompt(
         self,
         prompt: str,
@@ -3368,18 +3452,22 @@ class HermesCLI:
         subtitle: str = "",
         command_name: str = "review",
         metadata: Optional[dict[str, Any]] = None,
+        runtime: Optional[dict[str, Any]] = None,
     ) -> None:
-        runtime = self._resolve_analysis_runtime()
+        runtime = dict(runtime) if runtime else self._resolve_analysis_runtime()
         if runtime is None:
             _cprint("  (>_<) Cannot run review analysis: no valid analysis runtime.")
             return
         try:
             from hermes_cli.codex_companion import analyze_prompt
+            thinking_callback, tool_progress_callback = self._make_analysis_callbacks()
             result = analyze_prompt(
                 prompt,
                 model=self.model,
                 session_id=f"review-{uuid.uuid4().hex}",
                 runtime=runtime,
+                thinking_callback=thinking_callback,
+                tool_progress_callback=tool_progress_callback,
             )
             body = result.get("analysis", "")
             promotion_candidates = self._extract_promotion_candidates(
@@ -3438,12 +3526,18 @@ class HermesCLI:
             return
         try:
             from hermes_cli.codex_companion import analyze_change_set
+            thinking_callback = None
+            tool_progress_callback = None
+            if not auto_generated:
+                thinking_callback, tool_progress_callback = self._make_analysis_callbacks()
             result = analyze_change_set(
                 event,
                 model=self.model,
                 runtime=runtime,
                 natural_language=self.review_natural_language,
                 ignore_globs=self._get_review_exclude_globs(),
+                thinking_callback=thinking_callback,
+                tool_progress_callback=tool_progress_callback,
             )
             self._review_latest_event = event
             self._review_latest_analysis = result
@@ -3708,17 +3802,43 @@ class HermesCLI:
         command_name: str = "review",
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
+        runtime = self._resolve_analysis_runtime()
+        if runtime is None:
+            _cprint("  (>_<) Cannot run review analysis: no valid analysis runtime.")
+            return
+
+        runtime_meta = {
+            "provider": runtime.get("provider"),
+            "model": runtime.get("model") or self.model,
+            "base_url": runtime.get("base_url"),
+        }
+        pane_metadata = {**runtime_meta, **(metadata or {})}
+        self._begin_analysis_activity(
+            command_name=command_name,
+            title=title,
+            subtitle=subtitle,
+            metadata=pane_metadata,
+        )
+
+        def _runner() -> None:
+            try:
+                self._execute_review_prompt(
+                    prompt,
+                    title=title,
+                    subtitle=subtitle,
+                    command_name=command_name,
+                    metadata=metadata,
+                    runtime=runtime,
+                )
+            finally:
+                self._end_analysis_activity()
+
         threading.Thread(
-            target=lambda: self._execute_review_prompt(
-                prompt,
-                title=title,
-                subtitle=subtitle,
-                command_name=command_name,
-                metadata=metadata,
-            ),
+            target=_runner,
             daemon=True,
             name=f"review-task-{uuid.uuid4().hex[:6]}",
         ).start()
+        _cprint(f"  Queued {command_name} analysis in the background.")
 
     def _resolve_flow_target(self, target_path: str) -> tuple[Optional[Path], Optional[str]]:
         raw = str(target_path or "").strip()
@@ -3792,14 +3912,46 @@ class HermesCLI:
             if not directory_context.get("entries"):
                 _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
                 return
-            self._execute_explain_analysis(rel_path, auto_generated=False)
+            self._begin_analysis_activity(
+                command_name="explain",
+                title="Directory Explain",
+                subtitle=rel_path,
+                metadata={"target_path": rel_path, "kind": "directory"},
+            )
+            def _run_explain_dir() -> None:
+                try:
+                    self._execute_explain_analysis(rel_path, auto_generated=False)
+                finally:
+                    self._end_analysis_activity()
+            threading.Thread(
+                target=_run_explain_dir,
+                daemon=True,
+                name=f"explain-task-{uuid.uuid4().hex[:6]}",
+            ).start()
+            _cprint("  Queued explain analysis in the background.")
             return
 
         if not target.is_file():
             _cprint(f"  (>_<) File not found: {target_path}")
             return
 
-        self._execute_explain_analysis(rel_path, auto_generated=False)
+        self._begin_analysis_activity(
+            command_name="explain",
+            title="File Explain",
+            subtitle=rel_path,
+            metadata={"target_path": rel_path, "kind": "file"},
+        )
+        def _run_explain_file() -> None:
+            try:
+                self._execute_explain_analysis(rel_path, auto_generated=False)
+            finally:
+                self._end_analysis_activity()
+        threading.Thread(
+            target=_run_explain_file,
+            daemon=True,
+            name=f"explain-task-{uuid.uuid4().hex[:6]}",
+        ).start()
+        _cprint("  Queued explain analysis in the background.")
 
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()
@@ -4031,8 +4183,27 @@ class HermesCLI:
                 if error:
                     _cprint(f"  (>_<) {error}")
                     return
+            runtime = self._resolve_analysis_runtime()
+            runtime_meta = {}
+            if runtime:
+                runtime_meta = {
+                    "provider": runtime.get("provider"),
+                    "model": runtime.get("model") or self.model,
+                    "base_url": runtime.get("base_url"),
+                }
+            self._begin_analysis_activity(
+                command_name="review",
+                title="Diff Review",
+                subtitle="manual review",
+                metadata=runtime_meta,
+            )
+            def _run_manual_review() -> None:
+                try:
+                    self._execute_event_review(event, auto_generated=False)
+                finally:
+                    self._end_analysis_activity()
             threading.Thread(
-                target=lambda event=event: self._execute_event_review(event, auto_generated=False),
+                target=_run_manual_review,
                 daemon=True,
                 name=f"manual-review-{uuid.uuid4().hex[:6]}",
             ).start()
