@@ -2219,6 +2219,7 @@ class CodexCompanionWatcher:
         on_event: Optional[Callable[[dict, Path], None]] = None,
         on_analysis: Optional[Callable[[dict, Path], None]] = None,
         stop_event: Optional[threading.Event] = None,
+        emit_logs: bool = True,
     ):
         self.workspace_root = workspace_root.resolve()
         self.poll_interval = poll_interval
@@ -2233,6 +2234,7 @@ class CodexCompanionWatcher:
         self.on_event = on_event
         self.on_analysis = on_analysis
         self.stop_event = stop_event or threading.Event()
+        self.emit_logs = bool(emit_logs)
         self.session_id = uuid.uuid4().hex
         self.store = HermesStore()
         self._previous_snapshot = collect_workspace_snapshot(
@@ -2241,6 +2243,10 @@ class CodexCompanionWatcher:
             ignore_globs=self.ignore_globs,
         )
         self._pending: Dict[str, PendingChange] = {}
+
+    def _log(self, message: str) -> None:
+        if self.emit_logs:
+            print(message)
 
     def _merge_changes(self, changes: Dict[str, PendingChange]) -> None:
         for rel_path, change in changes.items():
@@ -2314,7 +2320,7 @@ class CodexCompanionWatcher:
                 metadata=dict(payload.get("metadata") or {}),
                 output_id=output_id,
             )
-            print(f"[store] output saved: {saved}")
+            self._log(f"[store] output saved: {saved}")
             paths[command] = saved
         return paths
 
@@ -2334,7 +2340,7 @@ class CodexCompanionWatcher:
 
     def _process_event(self, event: dict) -> None:
         event_path = self.store.save_event(event)
-        print(f"[store] event saved: {event_path}")
+        self._log(f"[store] event saved: {event_path}")
         if self.on_event is not None:
             self.on_event(event, event_path)
         if not self.analyze:
@@ -2364,7 +2370,7 @@ class CodexCompanionWatcher:
                 status="error",
                 metadata={"event_id": event["event_id"], **error_payload},
             )
-            print(f"[store] output saved: {analysis_path}")
+            self._log(f"[store] output saved: {analysis_path}")
             if self.on_analysis is not None:
                 self.on_analysis(error_payload, analysis_path)
             return
@@ -2376,7 +2382,7 @@ class CodexCompanionWatcher:
         self.stop_event.set()
 
     def run(self) -> int:
-        print(f"[store] watching {self.workspace_root}")
+        self._log(f"[store] watching {self.workspace_root}")
         try:
             while not self.stop_event.is_set():
                 current_snapshot = collect_workspace_snapshot(
@@ -2400,7 +2406,7 @@ class CodexCompanionWatcher:
             event = self._flush_ready(force=True)
             if event is not None:
                 self._process_event(event)
-            print("\n[store] stopped")
+            self._log("\n[store] stopped")
             return 0
 
 

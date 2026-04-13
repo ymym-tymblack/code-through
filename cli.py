@@ -1501,7 +1501,8 @@ class HermesCLI:
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            if not (self._app and self._app.is_running):
+                print(f"⏳ {status}")
             yield
         finally:
             self._command_running = False
@@ -3261,10 +3262,19 @@ class HermesCLI:
                 runner = task.get("runner")
                 try:
                     if callable(runner):
+                        sync_key = key.replace("auto:", "")
+                        self._command_running = True
+                        self._command_status = f"sync: {sync_key}"
+                        self._spinner_text = f"⚙ sync: {sync_key}"
+                        self._invalidate(min_interval=0.0)
                         runner()
                 except Exception as exc:
                     _cprint(f"  ⚠️  Auto analysis failed: {exc}")
                 finally:
+                    self._command_running = False
+                    self._command_status = ""
+                    self._spinner_text = ""
+                    self._invalidate(min_interval=0.0)
                     with self._auto_analysis_lock:
                         self._auto_analysis_pending.discard(key)
 
@@ -3613,6 +3623,7 @@ class HermesCLI:
             on_event=_on_event,
             on_analysis=_on_analysis,
             stop_event=self._review_stop_event,
+            emit_logs=False,
         )
 
         def _run() -> None:
@@ -4937,11 +4948,25 @@ class HermesCLI:
     # ====================================================================
 
     def _on_tool_progress(self, function_name: str, preview: str, function_args: dict):
-        """Called when a tool starts executing. Plays audio cue in voice mode."""
-        if not self._voice_mode:
-            return
-        # Skip internal/thinking tools
+        """Called when a tool starts executing. Updates TUI activity and optional voice cue."""
+        # Skip internal/thinking pseudo-tools
         if function_name.startswith("_"):
+            return
+
+        # Surface live agent activity inside the TUI instead of printing to stdout.
+        if str(getattr(self, "tool_progress_mode", "all") or "all").lower() != "off":
+            short_preview = str(preview or "").strip()
+            if len(short_preview) > 64:
+                short_preview = short_preview[:61] + "..."
+            activity = f"tool: {function_name}"
+            if short_preview:
+                activity += f" · {short_preview}"
+            self._command_status = activity
+            self._command_running = True
+            self._spinner_text = f"⚙ {activity}"
+            self._invalidate(min_interval=0.0)
+
+        if not self._voice_mode:
             return
         try:
             from tools.voice_mode import play_beep
