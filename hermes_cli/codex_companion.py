@@ -1875,12 +1875,40 @@ def _select_flow_targets(
         available_paths = set(all_candidates)
         doc_refs = _doc_references(guide_text, available_paths)
 
+        main_content_scores: dict[str, int] = {}
+        if not doc_refs:
+            for rel_path in all_candidates:
+                stem = Path(rel_path).stem.lower()
+                if not stem.startswith("main"):
+                    continue
+                file_path = workspace_root / rel_path
+                file_text = _load_text_file(file_path, max_file_bytes=DEFAULT_MAX_FILE_BYTES) or ""
+                if not file_text:
+                    continue
+                score = 20
+                inferred_symbol = _infer_flow_symbol(rel_path, file_text)
+                if inferred_symbol and inferred_symbol.lower() not in {"main", stem}:
+                    score += 45
+                if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", file_text):
+                    score += 90
+                if re.search(r"\b(?:main|run|start|serve|bootstrap|launch)\s*\(", file_text):
+                    score += 35
+                if re.search(r"\b(?:app|router|server|cli)\b", file_text, re.IGNORECASE):
+                    score += 20
+                if Path(rel_path).suffix.lower() in {".sh", ".bash", ".zsh"}:
+                    redirected = _extract_script_dispatch_target(workspace_root, rel_path, file_text, available_paths)
+                    if redirected:
+                        score += 60
+                if score > 0:
+                    main_content_scores[rel_path] = score
+
         ranked_candidates = sorted(
             all_candidates,
             key=lambda rel_path: (
                 -(
                     _flow_candidate_score(rel_path, readme_text=guide_text, changed=False)
                     + (120 if rel_path in doc_refs else 0)
+                    + (main_content_scores.get(rel_path, 0) if not doc_refs else 0)
                     + (25 if _looks_like_entrypoint(rel_path) else 0)
                 ),
                 len(Path(rel_path).parts),
@@ -1910,7 +1938,12 @@ def _select_flow_targets(
         for rel_path in ranked_candidates:
             if rel_path in seen_paths:
                 continue
-            reason = "doc-guided entrypoint" if rel_path in doc_refs else "workspace representative file"
+            if rel_path in doc_refs:
+                reason = "doc-guided entrypoint"
+            elif main_content_scores.get(rel_path, 0) > 0 and not doc_refs:
+                reason = "main-file content indicates entrypoint"
+            else:
+                reason = "workspace representative file"
             target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
             if target["path"] in seen_paths:
                 continue
