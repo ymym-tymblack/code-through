@@ -380,6 +380,43 @@ def test_set_sync_pane_output_replace_mode_overwrites_history():
     assert len(cli._sync_panes["explain"]["entries"]) == 1
 
 
+def test_render_review_panel_prefers_explicit_command_name_for_flow_pane():
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._sync_pane_history_limit = 3
+    cli._sync_panes = {"flow": {"entries": []}, "review": {"entries": []}}
+    cli._pane_widgets = {"flow": SimpleNamespace(text=""), "review": SimpleNamespace(text="")}
+    cli._app = object()
+    cli._invalidate = MagicMock()
+
+    cli._render_review_panel("Custom Flow Title", "flow body", subtitle="main in main.cpp", command_name="flow")
+
+    assert "flow body" in cli._sync_panes["flow"]["body"]
+    assert cli._pane_widgets["flow"].text == cli._sync_panes["flow"]["body"]
+    assert cli._sync_panes["review"].get("body", "") == ""
+
+
+def test_resolve_analysis_runtime_prefers_analysis_runtime_over_main_session():
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.requested_provider = "openai-codex"
+    cli.api_key = "main-key"
+    cli.base_url = "https://chatgpt.com/backend-api/codex"
+    cli.provider = "openai-codex"
+    cli.api_mode = "responses"
+    cli.console = MagicMock()
+    cli._ensure_runtime_credentials = MagicMock(return_value=True)
+
+    with patch("hermes_cli.codex_companion.resolve_analysis_runtime", return_value={"provider": "custom", "base_url": "http://127.0.0.1:8000/v1", "api_key": "", "api_mode": "chat_completions", "source": "analysis-config"}) as resolver:
+        runtime = cli._resolve_analysis_runtime()
+
+    assert runtime["source"] == "analysis-config"
+    assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
+    assert resolver.call_args.kwargs["fallback_runtime"]["source"] == "main-session"
+
+
 def test_flow_set_command_stores_default_target(tmp_path):
     from cli import HermesCLI
 

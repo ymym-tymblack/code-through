@@ -1565,8 +1565,9 @@ class HermesCLI:
         return True
 
     def _resolve_analysis_runtime(self) -> Optional[dict[str, Any]]:
+        fallback_runtime = None
         if self._ensure_runtime_credentials():
-            return {
+            fallback_runtime = {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
@@ -1576,10 +1577,12 @@ class HermesCLI:
         try:
             from hermes_cli.codex_companion import resolve_analysis_runtime
             return resolve_analysis_runtime(
-                fallback_runtime=None,
+                fallback_runtime=fallback_runtime,
                 requested_provider=self.requested_provider,
             )
         except Exception as exc:
+            if fallback_runtime is not None:
+                return fallback_runtime
             from hermes_cli.runtime_provider import format_runtime_provider_error
             message = format_runtime_provider_error(exc)
             self.console.print(f"[bold red]{message}[/]")
@@ -2881,8 +2884,15 @@ class HermesCLI:
             print("    2. Or create ~/.hermes/gateway.json")
             print()
 
-    def _render_review_panel(self, title: str, body: str, *, subtitle: str = "") -> None:
-        command = self._pane_command_from_title(title)
+    def _render_review_panel(
+        self,
+        title: str,
+        body: str,
+        *,
+        subtitle: str = "",
+        command_name: str = "",
+    ) -> None:
+        command = self._pane_command_from_title(title, command_name)
         self._set_sync_pane_output(
             command,
             title=title,
@@ -3347,7 +3357,7 @@ class HermesCLI:
                     **(metadata or {}),
                 },
             )
-            self._render_review_panel(title, body, subtitle=subtitle)
+            self._render_review_panel(title, body, subtitle=subtitle, command_name=command_name)
             self._show_promotion_hint(promotion_candidates)
         except Exception as exc:
             self._store_command_output(
