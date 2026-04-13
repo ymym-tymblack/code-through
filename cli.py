@@ -2891,12 +2891,15 @@ class HermesCLI:
         *,
         subtitle: str = "",
         command_name: str = "",
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         command = self._pane_command_from_title(title, command_name)
+        display_subtitle = self._merge_subtitle_with_runtime(subtitle, metadata or {})
         self._set_sync_pane_output(
             command,
             title=title,
-            subtitle=subtitle,
+            subtitle=display_subtitle,
+            metadata=metadata or {},
             body=body,
             status="ok",
             append=bool(getattr(self, "_app", None)),
@@ -2912,7 +2915,7 @@ class HermesCLI:
         except Exception:
             border = "#CD7F32"
             text_color = "#FFF8DC"
-        panel_title = title if not subtitle else f"{title} · {subtitle}"
+        panel_title = title if not display_subtitle else f"{title} · {display_subtitle}"
         ChatConsole().print(Panel(
             _rich_text_from_ansi(body or "(No analysis generated)"),
             title=f"[{border} bold]{panel_title}[/]",
@@ -2965,6 +2968,32 @@ class HermesCLI:
         return aliases.get(lowered, lowered if lowered in {"flow", "explain", "review", "diff"} else "review")
 
     @staticmethod
+    def _analysis_runtime_suffix(metadata: Optional[dict[str, Any]]) -> str:
+        if not isinstance(metadata, dict):
+            return ""
+        provider = str(metadata.get("provider") or "").strip()
+        model = str(metadata.get("model") or "").strip()
+        base_url = str(metadata.get("base_url") or "").strip()
+        if not (provider or model or base_url):
+            return ""
+        base_hint = ""
+        if base_url:
+            base_hint = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            if base_hint.endswith("/v1"):
+                base_hint = base_hint[:-3].rstrip("/")
+        parts = [part for part in (provider, model, base_hint) if part]
+        return "runtime: " + " · ".join(parts) if parts else ""
+
+    def _merge_subtitle_with_runtime(self, subtitle: str, metadata: Optional[dict[str, Any]]) -> str:
+        suffix = self._analysis_runtime_suffix(metadata)
+        base = str(subtitle or "").strip()
+        if not suffix:
+            return base
+        if suffix in base:
+            return base
+        return f"{base} · {suffix}" if base else suffix
+
+    @staticmethod
     def _format_sync_pane_entry(entry: dict[str, Any]) -> str:
         updated = float(entry.get("updated_at") or time.time())
         stamp = time.strftime("%H:%M:%S", time.localtime(updated))
@@ -3000,13 +3029,15 @@ class HermesCLI:
         pane = self._sync_panes.setdefault(command, {})
         entries = list(pane.get("entries") or [])
         timestamp = time.time()
+        runtime_metadata = metadata or {}
+        display_subtitle = self._merge_subtitle_with_runtime(subtitle, runtime_metadata)
         entry = {
             "title": title,
-            "subtitle": subtitle,
+            "subtitle": display_subtitle,
             "body": body or "",
             "status": status,
             "updated_at": timestamp,
-            "metadata": metadata or {},
+            "metadata": runtime_metadata,
         }
         if append:
             entries.append(entry)
@@ -3017,11 +3048,11 @@ class HermesCLI:
         rendered_body = self._compose_sync_pane_body(entries) if entries else (body or "")
         pane.update({
             "title": title,
-            "subtitle": subtitle,
+            "subtitle": display_subtitle,
             "body": rendered_body,
             "status": status,
             "updated_at": timestamp,
-            "metadata": metadata or {},
+            "metadata": runtime_metadata,
             "entries": entries,
         })
         widget = self._pane_widgets.get(command)
@@ -3344,20 +3375,25 @@ class HermesCLI:
                 body=body,
                 metadata=metadata,
             )
+            runtime_metadata = {
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "base_url": result.get("base_url"),
+            }
+            merged_metadata = {
+                "promotion_candidates": promotion_candidates,
+                **runtime_metadata,
+                **(metadata or {}),
+            }
             self._store_command_output(
                 command_name=command_name,
                 title=title,
                 body=body,
                 subtitle=subtitle,
                 status="ok",
-                metadata={
-                    "provider": result.get("provider"),
-                    "model": result.get("model"),
-                    "promotion_candidates": promotion_candidates,
-                    **(metadata or {}),
-                },
+                metadata=merged_metadata,
             )
-            self._render_review_panel(title, body, subtitle=subtitle, command_name=command_name)
+            self._render_review_panel(title, body, subtitle=subtitle, command_name=command_name, metadata=merged_metadata)
             self._show_promotion_hint(promotion_candidates)
         except Exception as exc:
             self._store_command_output(
@@ -3410,6 +3446,9 @@ class HermesCLI:
                 "promotion_candidates": result.get("promotion_candidates", []),
                 "source_event_id": event.get("event_id", ""),
                 "auto_generated": auto_generated,
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "base_url": result.get("base_url"),
             }
             self._store_command_output(
                 command_name="review",
@@ -3419,7 +3458,7 @@ class HermesCLI:
                 status="ok",
                 metadata=metadata,
             )
-            self._render_review_panel("Diff Review", body, subtitle=subtitle)
+            self._render_review_panel("Diff Review", body, subtitle=subtitle, metadata=metadata)
             self._show_promotion_hint(result.get("promotion_candidates", []) or [])
         except Exception as exc:
             self._set_sync_pane_output("review", title="Diff Review", subtitle="error", body=str(exc), status="error", append=bool(getattr(self, "_app", None)))
@@ -3553,7 +3592,7 @@ class HermesCLI:
                 changed = ", ".join(change["path"] for change in (self._review_latest_event or {}).get("changes", [])[:3])
                 if len((self._review_latest_event or {}).get("changes", [])) > 3:
                     changed += ", ..."
-                self._render_review_panel("Diff", payload.get("analysis", ""), subtitle=changed)
+                self._render_review_panel("Diff", payload.get("analysis", ""), subtitle=changed, metadata=payload)
                 self._show_promotion_hint(payload.get("promotion_candidates", []) or [])
             else:
                 self._set_sync_pane_output("diff", title="Diff", subtitle="sync failed", body=str(payload.get("error", "unknown error")), status="error")

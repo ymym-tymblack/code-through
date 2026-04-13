@@ -854,6 +854,8 @@ class HermesStore:
             result["provider"] = metadata["provider"]
         if "model" in metadata:
             result["model"] = metadata["model"]
+        if "base_url" in metadata:
+            result["base_url"] = metadata["base_url"]
         if "promotion_candidates" in metadata:
             result["promotion_candidates"] = metadata["promotion_candidates"]
         return result
@@ -1904,6 +1906,16 @@ def _explain_directory(
     return result
 
 
+def _runtime_metadata_from_result(result: Optional[dict[str, Any]]) -> dict[str, str]:
+    if not isinstance(result, dict):
+        return {}
+    metadata: dict[str, str] = {}
+    for key in ("provider", "model", "base_url"):
+        value = str(result.get(key) or "").strip()
+        if value:
+            metadata[key] = value
+    return metadata
+
 def generate_sync_bundle(
     workspace_root: Path,
     *,
@@ -1941,6 +1953,7 @@ def generate_sync_bundle(
             'related_files': review_result.get('related_files', []),
             'promotion_candidates': review_result.get('promotion_candidates', []),
             'selection_reason': 'changed files' if changed_paths else 'workspace snapshot',
+            **_runtime_metadata_from_result(review_result),
             'source_event_id': review_event.get('event_id', ''),
         },
     }
@@ -1955,6 +1968,7 @@ def generate_sync_bundle(
         sync_kind=sync_kind,
     )
     flow_parts: list[str] = []
+    flow_runtime_meta: dict[str, str] = {}
     for item in flow_targets:
         result = explain_file(
             workspace_root,
@@ -1964,6 +1978,8 @@ def generate_sync_bundle(
             runtime=runtime,
             natural_language=natural_language,
         )
+        if not flow_runtime_meta:
+            flow_runtime_meta = _runtime_metadata_from_result(result)
         flow_parts.append(f"# {item['symbol']} @ {item['path']}\n{result.get('analysis', '')}".strip())
     bundle['flow'] = {
         'title': 'Flow',
@@ -1973,11 +1989,13 @@ def generate_sync_bundle(
             'sync_kind': sync_kind,
             'targets': flow_targets,
             'selection_reason': 'workspace-based llm planner' if sync_kind == 'startup' else 'changed files first, then representative files',
+            **flow_runtime_meta,
         },
     }
 
     explain_targets = _select_explain_targets(flow_targets, sync_kind=sync_kind)
     explain_parts: list[str] = []
+    explain_runtime_meta: dict[str, str] = {}
     for item in explain_targets:
         rel_path = str(item.get('path') or '')
         kind = str(item.get('kind') or 'file')
@@ -1999,6 +2017,8 @@ def generate_sync_bundle(
                 runtime=runtime,
                 natural_language=natural_language,
             )
+        if not explain_runtime_meta:
+            explain_runtime_meta = _runtime_metadata_from_result(result)
         explain_parts.append(f"# {rel_path}\n{result.get('analysis', '')}".strip())
     bundle['explain'] = {
         'title': 'Explain',
@@ -2008,6 +2028,7 @@ def generate_sync_bundle(
             'sync_kind': sync_kind,
             'targets': explain_targets,
             'selection_reason': 'derived from flow targets',
+            **explain_runtime_meta,
         },
     }
 
@@ -2031,6 +2052,7 @@ def generate_sync_bundle(
             'sync_kind': sync_kind,
             'targets': [{'path': path} for path in changed_paths],
             'selection_reason': 'current git/workspace diff',
+            **_runtime_metadata_from_result(diff_result),
             'source_event_id': (event or {}).get('event_id', ''),
         },
     }
@@ -2096,6 +2118,7 @@ def analyze_prompt(
     return {
         "model": effective_model,
         "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
         "analysis": response_text or "",
         "timestamp": time.time(),
     }
@@ -2137,8 +2160,9 @@ def analyze_change_set(
     )
     return {
         "event_id": event["event_id"],
-        "model": model or _default_analysis_model(),
+        "model": result.get("model") or model or _default_analysis_model(),
         "provider": result.get("provider"),
+        "base_url": result.get("base_url"),
         "analysis": result.get("analysis", ""),
         "timestamp": result.get("timestamp", time.time()),
         "related_files": event["related_files"],
