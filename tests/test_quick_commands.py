@@ -213,6 +213,7 @@ class TestCLIQuickCommands:
         watcher_cls.assert_called_once()
         kwargs = watcher_cls.call_args.kwargs
         assert kwargs["ignore_globs"] == ["memo/**", "notes/*.md"]
+        assert kwargs["analyze"] is False
 
     def test_review_exclude_add_updates_config_and_prints(self):
         from cli import HermesCLI
@@ -377,3 +378,43 @@ def test_set_sync_pane_output_replace_mode_overwrites_history():
     assert "fresh.py" in body
     assert "fresh body" in body
     assert len(cli._sync_panes["explain"]["entries"]) == 1
+
+
+def test_flow_set_command_stores_default_target(tmp_path):
+    from cli import HermesCLI
+
+    target_dir = tmp_path / "pkg"
+    target_dir.mkdir()
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.workspace_root = tmp_path
+    cli._flow_target_path = ""
+
+    with patch("cli._cprint") as cprint_mock:
+        cli._handle_flow_command("/flow set pkg")
+
+    assert cli._flow_target_path == "pkg"
+    printed = " ".join(str(call.args[0]) for call in cprint_mock.call_args_list)
+    assert "Flow target set to directory: pkg" in printed
+
+
+def test_explain_without_argument_uses_flow_target(tmp_path):
+    from cli import HermesCLI
+
+    target_dir = tmp_path / "pkg"
+    target_dir.mkdir()
+    (target_dir / "core.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.workspace_root = tmp_path
+    cli._flow_target_path = "pkg"
+    cli.review_natural_language = "en"
+    cli._run_review_prompt = MagicMock()
+
+    cli._handle_explain_command("/explain")
+
+    cli._run_review_prompt.assert_called_once()
+    kwargs = cli._run_review_prompt.call_args.kwargs
+    assert kwargs["title"] == "Directory Explain"
+    assert kwargs["subtitle"] == "pkg"
+    assert kwargs["metadata"]["target_path"] == "pkg"

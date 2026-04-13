@@ -1292,6 +1292,7 @@ class HermesCLI:
         self.review_promotion_mode = str(
             CLI_CONFIG.get("review", {}).get("promotion_mode", "semi_auto")
         ).strip().lower()
+        self._flow_target_path = ""
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -1381,10 +1382,10 @@ class HermesCLI:
         self._review_watcher = None
         self._review_thread: Optional[threading.Thread] = None
         self._review_stop_event = threading.Event()
-        self._review_enabled = bool(CLI_CONFIG.get("review", {}).get("enabled", True))
+        self._review_enabled = False
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
-        self._sync_enabled = bool((CLI_CONFIG.get("sync", {}) or {}).get("enabled", self._review_enabled))
+        self._sync_enabled = False
         self._sync_latest_bundle: dict[str, dict[str, Any]] = {}
         self._sync_latest_event: Optional[dict[str, Any]] = None
         self._sync_panes: dict[str, dict[str, Any]] = {
@@ -3253,6 +3254,7 @@ class HermesCLI:
             runtime=runtime,
             model=getattr(self, "model", None),
             natural_language=self.review_natural_language,
+            analyze=False,
             on_event=_on_event,
             on_analysis=_on_analysis,
             stop_event=self._review_stop_event,
@@ -3265,33 +3267,12 @@ class HermesCLI:
                 print()
                 _cprint(f"  ⚠️  Review watcher stopped: {exc}")
 
-        def _run_startup_sync() -> None:
-            try:
-                bundle = self._review_watcher.run_startup_sync()
-                self._sync_latest_bundle = bundle
-                for command, pane_payload in bundle.items():
-                    self._set_sync_pane_output(
-                        command,
-                        title=str(pane_payload.get("title") or command.title()),
-                        subtitle=str(pane_payload.get("subtitle") or ""),
-                        body=str(pane_payload.get("body") or ""),
-                        status="ok",
-                        metadata=dict(pane_payload.get("metadata") or {}),
-                    )
-                if self._app:
-                    self._invalidate(min_interval=0)
-            except Exception as exc:
-                self._set_sync_pane_output("review", title="Review", subtitle="startup sync failed", body=str(exc), status="error")
-                if self._app:
-                    self._invalidate(min_interval=0)
-
         self._review_thread = threading.Thread(
             target=_run,
             daemon=True,
             name=f"review-watcher-{self.session_id}",
         )
         self._review_thread.start()
-        threading.Thread(target=_run_startup_sync, daemon=True, name=f"startup-sync-{self.session_id}").start()
         self._review_enabled = True
         self._sync_enabled = True
         return True
@@ -3313,9 +3294,9 @@ class HermesCLI:
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "on":
             if self._start_review_watcher():
-                _cprint("  ✅ Codebase sync enabled.")
+                _cprint("  ✅ File watching enabled. LLM analysis stays manual; use /review, /diff, /flow, /explain from the prompt below.")
             else:
-                _cprint("  (>_<) Failed to enable codebase sync.")
+                _cprint("  (>_<) Failed to enable file watching.")
             return
         if action == "off":
             self._stop_review_watcher()
@@ -3330,12 +3311,7 @@ class HermesCLI:
             _cprint(f"  Codebase sync: {status}. {details}")
             return
         if action == "now":
-            if not self._review_watcher:
-                if not self._start_review_watcher():
-                    _cprint("  (>_<) Cannot start codebase sync.")
-                    return
-            threading.Thread(target=self._review_watcher.run_startup_sync, daemon=True, name=f"manual-sync-{self.session_id}").start()
-            _cprint("  Triggered startup sync in the background.")
+            _cprint("  Automatic multi-pane sync is disabled. Run /review, /diff, /flow set <path>, and /explain manually from the prompt below.")
             return
         if action == "last":
             target = parts[2].strip().lower() if len(parts) > 2 else "review"
@@ -3420,15 +3396,58 @@ class HermesCLI:
 
         threading.Thread(target=_worker, daemon=True, name=f"review-task-{uuid.uuid4().hex[:6]}").start()
 
+    def _resolve_flow_target(self, target_path: str) -> tuple[Optional[Path], Optional[str]]:
+        raw = str(target_path or "").strip()
+        if not raw:
+            return None, None
+        workspace_root = self.workspace_root
+        target = (workspace_root / raw).expanduser().resolve()
+        try:
+            rel_path = str(target.relative_to(workspace_root))
+        except ValueError:
+            return None, None
+        return target, rel_path
+
+    def _handle_flow_target_command(self, action: str, target_path: str = "") -> bool:
+        action = (action or "").strip().lower()
+        if action == "show":
+            if self._flow_target_path:
+                _cprint(f"  Current flow target: {self._flow_target_path}")
+            else:
+                _cprint("  No flow target set. Use /flow set <path> first.")
+            return True
+        if action == "clear":
+            self._flow_target_path = ""
+            _cprint("  Cleared the current flow target.")
+            return True
+        if action != "set":
+            return False
+        if not target_path.strip():
+            _cprint("  Usage: /flow set <path>")
+            return True
+        target, rel_path = self._resolve_flow_target(target_path)
+        if target is None or rel_path is None or not target.exists():
+            _cprint(f"  (>_<) Path not found: {target_path}")
+            return True
+        self._flow_target_path = rel_path
+        kind = "directory" if target.is_dir() else "file"
+        _cprint(f"  Flow target set to {kind}: {rel_path}")
+        _cprint("  Run /explain to analyze this target in detail.")
+        return True
+
     def _handle_explain_command(self, cmd: str) -> None:
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /explain <path>")
-            return
-        target_path = parts[1].strip()
+            if not self._flow_target_path:
+                _cprint("  Usage: /explain <path>")
+                _cprint("  Tip: set a default target first with /flow set <path>.")
+                return
+            target_path = self._flow_target_path
+        else:
+            target_path = parts[1].strip()
         workspace_root = self.workspace_root
-        target = (workspace_root / target_path).resolve()
-        if not target.exists():
+        target, rel_path = self._resolve_flow_target(target_path)
+        if target is None or rel_path is None or not target.exists():
             _cprint(f"  (>_<) Path not found: {target_path}")
             return
 
@@ -3441,10 +3460,6 @@ class HermesCLI:
         natural_language = getattr(self, "review_natural_language", "en")
 
         if target.is_dir():
-            try:
-                rel_path = str(target.relative_to(workspace_root))
-            except ValueError:
-                rel_path = target_path
             directory_context = collect_directory_context(workspace_root, target_path=rel_path)
             if not directory_context.get("entries"):
                 _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
@@ -3468,10 +3483,6 @@ class HermesCLI:
             _cprint(f"  (>_<) File not found: {target_path}")
             return
 
-        try:
-            rel_path = str(target.relative_to(workspace_root))
-        except ValueError:
-            rel_path = target_path
         related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
         prompt = build_file_explanation_prompt(
             workspace_root,
@@ -3490,9 +3501,12 @@ class HermesCLI:
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()
         if len(parts) < 2:
-            _cprint("  Usage: /flow <symbol> [path]")
+            _cprint("  Usage: /flow set <path> | /flow show | /flow clear | /flow <symbol> [path]")
             return
-        symbol = parts[1].strip()
+        subcommand = parts[1].strip()
+        if self._handle_flow_target_command(subcommand, " ".join(parts[2:]) if len(parts) > 2 else ""):
+            return
+        symbol = subcommand
         explicit_path = parts[2].strip() if len(parts) > 2 else ""
         workspace_root = self.workspace_root
         from hermes_cli.codex_companion import (
@@ -3502,8 +3516,21 @@ class HermesCLI:
         )
         natural_language = getattr(self, "review_natural_language", "en")
 
-        target_path = explicit_path
-        if not target_path:
+        target_path = explicit_path or self._flow_target_path
+        if target_path:
+            target, normalized_target_path = self._resolve_flow_target(target_path)
+            if target is None or normalized_target_path is None or not target.exists():
+                _cprint(f"  (>_<) Path not found: {target_path}")
+                return
+            if target.is_dir():
+                matches = find_symbol_candidates(target, symbol=symbol)
+                if not matches:
+                    _cprint(f"  (>_<) Could not find symbol '{symbol}' under: {normalized_target_path}")
+                    return
+                target_path = str(Path(normalized_target_path) / matches[0]) if normalized_target_path != "." else matches[0]
+            else:
+                target_path = normalized_target_path
+        else:
             matches = find_symbol_candidates(workspace_root, symbol=symbol)
             if not matches:
                 _cprint(f"  (>_<) Could not find symbol: {symbol}")
@@ -3696,9 +3723,9 @@ class HermesCLI:
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "on":
             if self._start_review_watcher():
-                _cprint("  ✅ Diff review store enabled.")
+                _cprint("  ✅ File watching enabled. Review analysis stays manual; run /review explicitly when you want it.")
             else:
-                _cprint("  (>_<) Failed to enable diff review store.")
+                _cprint("  (>_<) Failed to enable file watching.")
             return
         if action == "off":
             self._stop_review_watcher()
@@ -5660,12 +5687,8 @@ class HermesCLI:
             _welcome_color = "#E6F1FF"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
-        if self._sync_enabled or self._review_enabled:
-            if self._start_review_watcher():
-                _cprint("  🔎 Automatic codebase sync is enabled for this session.")
-            else:
-                _cprint("  ⚠️  Automatic codebase sync could not start; use /sync on after fixing auth.")
-        
+        _cprint("  2x2 panes start idle. Use /flow set <path>, /explain, /review, and /diff manually from the prompt below.")
+
         # State for async operation
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
@@ -6236,7 +6259,7 @@ class HermesCLI:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
-            return "message or /flow <symbol> [path], /explain <path>, /review ..., /diff [notes]"
+            return "message or /flow set <path>, /flow <symbol> [path], /explain [path], /review ..., /diff [notes]"
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
