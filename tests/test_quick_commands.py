@@ -418,3 +418,22 @@ def test_explain_without_argument_uses_flow_target(tmp_path):
     assert kwargs["title"] == "Directory Explain"
     assert kwargs["subtitle"] == "pkg"
     assert kwargs["metadata"]["target_path"] == "pkg"
+
+
+def test_flow_set_command_queues_auto_explain_when_enabled(tmp_path):
+    from cli import HermesCLI
+
+    target_dir = tmp_path / "pkg"
+    target_dir.mkdir()
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.workspace_root = tmp_path
+    cli._flow_target_path = ""
+    cli._auto_sync_commands = {"explain": True}
+    cli._enqueue_auto_analysis = MagicMock()
+
+    with patch("cli._cprint"):
+        cli._handle_flow_command("/flow set pkg")
+
+    cli._enqueue_auto_analysis.assert_called_once()
+    assert cli._enqueue_auto_analysis.call_args[0][0] == "auto:explain"

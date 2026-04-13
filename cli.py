@@ -1382,10 +1382,15 @@ class HermesCLI:
         self._review_watcher = None
         self._review_thread: Optional[threading.Thread] = None
         self._review_stop_event = threading.Event()
-        self._review_enabled = False
+        self._review_enabled = True
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
-        self._sync_enabled = False
+        self._sync_enabled = True
+        self._auto_sync_commands = {"review": True, "diff": True, "explain": True, "flow": False}
+        self._auto_analysis_queue: queue.Queue = queue.Queue()
+        self._auto_analysis_thread: Optional[threading.Thread] = None
+        self._auto_analysis_pending: set[str] = set()
+        self._auto_analysis_lock = threading.Lock()
         self._sync_latest_bundle: dict[str, dict[str, Any]] = {}
         self._sync_latest_event: Optional[dict[str, Any]] = None
         self._sync_panes: dict[str, dict[str, Any]] = {
@@ -3200,6 +3205,306 @@ class HermesCLI:
             return
         self._queue_promotion_from_payload(payload, target=target, index=index)
 
+    def _ensure_auto_analysis_worker(self) -> None:
+        thread = getattr(self, "_auto_analysis_thread", None)
+        if thread and thread.is_alive():
+            return
+
+        def _worker() -> None:
+            while not getattr(self, "_should_exit", False):
+                try:
+                    task = self._auto_analysis_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                key = str(task.get("key") or "")
+                runner = task.get("runner")
+                try:
+                    if callable(runner):
+                        runner()
+                except Exception as exc:
+                    _cprint(f"  ⚠️  Auto analysis failed: {exc}")
+                finally:
+                    with self._auto_analysis_lock:
+                        self._auto_analysis_pending.discard(key)
+
+        self._auto_analysis_thread = threading.Thread(
+            target=_worker,
+            daemon=True,
+            name=f"auto-analysis-{self.session_id}",
+        )
+        self._auto_analysis_thread.start()
+
+    def _enqueue_auto_analysis(self, key: str, runner) -> None:
+        self._ensure_auto_analysis_worker()
+        with self._auto_analysis_lock:
+            if key in self._auto_analysis_pending:
+                return
+            self._auto_analysis_pending.add(key)
+        self._auto_analysis_queue.put({"key": key, "runner": runner})
+
+    def _flow_target_matches_event(self, event: Optional[dict[str, Any]]) -> bool:
+        target = str(getattr(self, "_flow_target_path", "") or "").strip()
+        if not target:
+            return False
+        changes = (event or {}).get("changes", []) or []
+        if not changes:
+            return True
+        target_path = Path(target)
+        for change in changes:
+            rel_path = str(change.get("path") or "").strip()
+            if not rel_path:
+                continue
+            rel = Path(rel_path)
+            if rel == target_path or target_path in rel.parents:
+                return True
+        return False
+
+    @staticmethod
+    def _split_diff_by_file(diff_text: str) -> dict[str, str]:
+        sections: dict[str, list[str]] = {}
+        current_path = ""
+        for line in (diff_text or "").splitlines():
+            if line.startswith("diff --git a/") and " b/" in line:
+                current_path = line.split(" b/", 1)[1].strip()
+                sections.setdefault(current_path, [])
+            if current_path:
+                sections.setdefault(current_path, []).append(line)
+        return {path: "\n".join(lines).strip() for path, lines in sections.items() if lines}
+
+    def _build_synthetic_review_event(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        context = self._collect_commit_context()
+        error = context.get("error")
+        if error:
+            return None, str(error)
+        changed_paths = context.get("changed_paths", []) or []
+        diff_text = str(context.get("diff_text") or "").strip()
+        if not changed_paths or not diff_text:
+            return None, "No git diff is available to review."
+        diff_map = self._split_diff_by_file(diff_text)
+        changes = []
+        for path_text in changed_paths[:8]:
+            per_file_diff = diff_map.get(path_text, diff_text)
+            changes.append({
+                "path": path_text,
+                "change_type": "modified",
+                "diff_text": per_file_diff[:12000],
+            })
+        return {
+            "event_id": f"manual-review-{uuid.uuid4().hex[:8]}",
+            "workspace_root": str(self.workspace_root),
+            "changes": changes,
+            "omitted_changes": max(0, len(changed_paths) - len(changes)),
+        }, None
+
+    def _schedule_auto_analyses(self, event: Optional[dict[str, Any]]) -> None:
+        event_copy = dict(event) if isinstance(event, dict) else None
+        if self._auto_sync_commands.get("review") and event_copy:
+            self._enqueue_auto_analysis("auto:review", lambda event=event_copy: self._execute_event_review(event, auto_generated=True))
+        if self._auto_sync_commands.get("diff"):
+            self._enqueue_auto_analysis("auto:diff", lambda: self._execute_diff_analysis(auto_generated=True))
+        if self._auto_sync_commands.get("explain") and self._flow_target_matches_event(event_copy):
+            target = str(self._flow_target_path or "")
+            if target:
+                self._enqueue_auto_analysis("auto:explain", lambda target_path=target: self._execute_explain_analysis(target_path, auto_generated=True))
+
+    def _execute_review_prompt(
+        self,
+        prompt: str,
+        *,
+        title: str,
+        subtitle: str = "",
+        command_name: str = "review",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        runtime = self._resolve_analysis_runtime()
+        if runtime is None:
+            _cprint("  (>_<) Cannot run review analysis: no valid analysis runtime.")
+            return
+        try:
+            from hermes_cli.codex_companion import analyze_prompt
+            result = analyze_prompt(
+                prompt,
+                model=self.model,
+                session_id=f"review-{uuid.uuid4().hex}",
+                runtime=runtime,
+            )
+            body = result.get("analysis", "")
+            promotion_candidates = self._extract_promotion_candidates(
+                command_name=command_name,
+                body=body,
+                metadata=metadata,
+            )
+            self._store_command_output(
+                command_name=command_name,
+                title=title,
+                body=body,
+                subtitle=subtitle,
+                status="ok",
+                metadata={
+                    "provider": result.get("provider"),
+                    "model": result.get("model"),
+                    "promotion_candidates": promotion_candidates,
+                    **(metadata or {}),
+                },
+            )
+            self._render_review_panel(title, body, subtitle=subtitle)
+            self._show_promotion_hint(promotion_candidates)
+        except Exception as exc:
+            self._store_command_output(
+                command_name=command_name,
+                title=title,
+                subtitle=subtitle,
+                status="error",
+                metadata={"error": str(exc), **(metadata or {})},
+            )
+            self._set_sync_pane_output(
+                command_name,
+                title=title,
+                subtitle=subtitle,
+                body=str(exc),
+                status="error",
+                metadata={"error": str(exc), **(metadata or {})},
+                append=bool(getattr(self, "_app", None)),
+            )
+            print()
+            _cprint(f"  ❌ {title} failed: {exc}")
+        finally:
+            if self._app:
+                self._invalidate(min_interval=0)
+
+    def _execute_event_review(self, event: dict[str, Any], *, auto_generated: bool = False) -> None:
+        runtime = self._resolve_analysis_runtime()
+        if runtime is None:
+            if not auto_generated:
+                _cprint("  (>_<) Cannot run review analysis: no valid analysis runtime.")
+            return
+        try:
+            from hermes_cli.codex_companion import analyze_change_set
+            result = analyze_change_set(
+                event,
+                model=self.model,
+                runtime=runtime,
+                natural_language=self.review_natural_language,
+                ignore_globs=self._get_review_exclude_globs(),
+            )
+            self._review_latest_event = event
+            self._review_latest_analysis = result
+            changed_paths = [str(change.get("path") or "") for change in event.get("changes", []) if change.get("path")]
+            subtitle = ", ".join(changed_paths[:3])
+            if len(changed_paths) > 3:
+                subtitle += ", ..."
+            subtitle = subtitle or ("automatic review" if auto_generated else "manual review")
+            body = result.get("analysis", "")
+            metadata = {
+                "related_files": result.get("related_files", []),
+                "promotion_candidates": result.get("promotion_candidates", []),
+                "source_event_id": event.get("event_id", ""),
+                "auto_generated": auto_generated,
+            }
+            self._store_command_output(
+                command_name="review",
+                title="Diff Review",
+                body=body,
+                subtitle=subtitle,
+                status="ok",
+                metadata=metadata,
+            )
+            self._render_review_panel("Diff Review", body, subtitle=subtitle)
+            self._show_promotion_hint(result.get("promotion_candidates", []) or [])
+        except Exception as exc:
+            self._set_sync_pane_output("review", title="Diff Review", subtitle="error", body=str(exc), status="error", append=bool(getattr(self, "_app", None)))
+            if not auto_generated:
+                _cprint(f"  ❌ Review failed: {exc}")
+
+    def _execute_diff_analysis(self, *, extra_instruction: str = "", auto_generated: bool = False) -> None:
+        context = self._collect_commit_context()
+        error = context.get("error")
+        if error:
+            if not auto_generated:
+                _cprint(f"  (>_<) {error}")
+            return
+        from hermes_cli.codex_companion import build_diff_explanation_prompt
+        changed_paths = context.get("changed_paths", []) or []
+        prompt = build_diff_explanation_prompt(
+            self.workspace_root,
+            changed_paths=changed_paths,
+            diff_text=context.get("diff_text", ""),
+            natural_language=getattr(self, "review_natural_language", "en"),
+        )
+        if extra_instruction:
+            prompt += f"\n\nAdditional instruction:\n{extra_instruction}"
+        subtitle = ", ".join(changed_paths[:3])
+        if len(changed_paths) > 3:
+            subtitle += ", ..."
+        subtitle = subtitle or f"{len(changed_paths)} files"
+        self._execute_review_prompt(
+            prompt=prompt,
+            title="Diff",
+            subtitle=subtitle,
+            command_name="diff",
+            metadata={
+                "repo_root": context.get("repo_root", ""),
+                "changed_paths": changed_paths,
+                "status_text": context.get("status_text", ""),
+                "untracked_paths": context.get("untracked_paths", []),
+                "extra_instruction": extra_instruction,
+                "auto_generated": auto_generated,
+            },
+        )
+
+    def _execute_explain_analysis(self, target_path: str, *, auto_generated: bool = False) -> None:
+        workspace_root = self.workspace_root
+        target, rel_path = self._resolve_flow_target(target_path)
+        if target is None or rel_path is None or not target.exists():
+            if not auto_generated:
+                _cprint(f"  (>_<) Path not found: {target_path}")
+            return
+        from hermes_cli.codex_companion import (
+            build_directory_explanation_prompt,
+            build_file_explanation_prompt,
+            collect_directory_context,
+            collect_related_context,
+        )
+        natural_language = getattr(self, "review_natural_language", "en")
+        if target.is_dir():
+            directory_context = collect_directory_context(workspace_root, target_path=rel_path)
+            if not directory_context.get("entries"):
+                if not auto_generated:
+                    _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
+                return
+            prompt = build_directory_explanation_prompt(
+                workspace_root,
+                target_path=rel_path,
+                directory_context=directory_context,
+                natural_language=natural_language,
+            )
+            self._execute_review_prompt(
+                prompt,
+                title="Directory Explain",
+                subtitle=rel_path,
+                command_name="explain",
+                metadata={"target_path": rel_path, "kind": "directory", "auto_generated": auto_generated},
+            )
+            return
+        if not target.is_file():
+            if not auto_generated:
+                _cprint(f"  (>_<) File not found: {target_path}")
+            return
+        related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
+        prompt = build_file_explanation_prompt(
+            workspace_root,
+            target_path=rel_path,
+            related_files=related,
+            natural_language=natural_language,
+        )
+        self._execute_review_prompt(
+            prompt,
+            title="File Explain",
+            subtitle=rel_path,
+            command_name="explain",
+            metadata={"target_path": rel_path, "kind": "file", "related_files": related, "auto_generated": auto_generated},
+        )
+
     def _start_review_watcher(self) -> bool:
         if self._review_thread and self._review_thread.is_alive():
             return True
@@ -3218,6 +3523,7 @@ class HermesCLI:
         def _on_event(event: dict, _path: Path) -> None:
             self._review_latest_event = event
             self._sync_latest_event = event
+            self._schedule_auto_analyses(event)
 
         def _on_analysis(payload: dict, _path: Path) -> None:
             self._review_latest_analysis = payload
@@ -3293,8 +3599,10 @@ class HermesCLI:
         parts = cmd.strip().split(maxsplit=2)
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "on":
+            self._review_enabled = True
+            self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. LLM analysis stays manual; use /review, /diff, /flow, /explain from the prompt below.")
+                _cprint("  ✅ File watching enabled. review/diff/explain automation is on; flow stays manual.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -3311,7 +3619,8 @@ class HermesCLI:
             _cprint(f"  Codebase sync: {status}. {details}")
             return
         if action == "now":
-            _cprint("  Automatic multi-pane sync is disabled. Run /review, /diff, /flow set <path>, and /explain manually from the prompt below.")
+            self._schedule_auto_analyses(self._review_latest_event)
+            _cprint("  Queued automatic review/diff/explain refresh tasks.")
             return
         if action == "last":
             target = parts[2].strip().lower() if len(parts) > 2 else "review"
@@ -3336,65 +3645,17 @@ class HermesCLI:
         command_name: str = "review",
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        runtime = self._resolve_analysis_runtime()
-        if runtime is None:
-            _cprint("  (>_<) Cannot run review analysis: no valid analysis runtime.")
-            return
-
-        def _worker() -> None:
-            try:
-                from hermes_cli.codex_companion import analyze_prompt
-                result = analyze_prompt(
-                    prompt,
-                    model=self.model,
-                    session_id=f"review-{uuid.uuid4().hex}",
-                    runtime=runtime,
-                )
-                body = result.get("analysis", "")
-                promotion_candidates = self._extract_promotion_candidates(
-                    command_name=command_name,
-                    body=body,
-                    metadata=metadata,
-                )
-                self._store_command_output(
-                    command_name=command_name,
-                    title=title,
-                    body=body,
-                    subtitle=subtitle,
-                    status="ok",
-                    metadata={
-                        "provider": result.get("provider"),
-                        "model": result.get("model"),
-                        "promotion_candidates": promotion_candidates,
-                        **(metadata or {}),
-                    },
-                )
-                self._render_review_panel(title, body, subtitle=subtitle)
-                self._show_promotion_hint(promotion_candidates)
-            except Exception as exc:
-                self._store_command_output(
-                    command_name=command_name,
-                    title=title,
-                    subtitle=subtitle,
-                    status="error",
-                    metadata={"error": str(exc), **(metadata or {})},
-                )
-                self._set_sync_pane_output(
-                    command_name,
-                    title=title,
-                    subtitle=subtitle,
-                    body=str(exc),
-                    status="error",
-                    metadata={"error": str(exc), **(metadata or {})},
-                    append=bool(getattr(self, "_app", None)),
-                )
-                print()
-                _cprint(f"  ❌ {title} failed: {exc}")
-            finally:
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        threading.Thread(target=_worker, daemon=True, name=f"review-task-{uuid.uuid4().hex[:6]}").start()
+        threading.Thread(
+            target=lambda: self._execute_review_prompt(
+                prompt,
+                title=title,
+                subtitle=subtitle,
+                command_name=command_name,
+                metadata=metadata,
+            ),
+            daemon=True,
+            name=f"review-task-{uuid.uuid4().hex[:6]}",
+        ).start()
 
     def _resolve_flow_target(self, target_path: str) -> tuple[Optional[Path], Optional[str]]:
         raw = str(target_path or "").strip()
@@ -3432,7 +3693,11 @@ class HermesCLI:
         self._flow_target_path = rel_path
         kind = "directory" if target.is_dir() else "file"
         _cprint(f"  Flow target set to {kind}: {rel_path}")
-        _cprint("  Run /explain to analyze this target in detail.")
+        if self._auto_sync_commands.get("explain"):
+            self._enqueue_auto_analysis("auto:explain", lambda target_path=rel_path: self._execute_explain_analysis(target_path, auto_generated=True))
+            _cprint("  Queued automatic explain for this target.")
+        else:
+            _cprint("  Run /explain to analyze this target in detail.")
         return True
 
     def _handle_explain_command(self, cmd: str) -> None:
@@ -3464,39 +3729,14 @@ class HermesCLI:
             if not directory_context.get("entries"):
                 _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
                 return
-            prompt = build_directory_explanation_prompt(
-                workspace_root,
-                target_path=rel_path,
-                directory_context=directory_context,
-                natural_language=natural_language,
-            )
-            self._run_review_prompt(
-                prompt,
-                title="Directory Explain",
-                subtitle=rel_path,
-                command_name="explain",
-                metadata={"target_path": rel_path, "kind": "directory"},
-            )
+            self._execute_explain_analysis(rel_path, auto_generated=False)
             return
 
         if not target.is_file():
             _cprint(f"  (>_<) File not found: {target_path}")
             return
 
-        related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
-        prompt = build_file_explanation_prompt(
-            workspace_root,
-            target_path=rel_path,
-            related_files=related,
-            natural_language=natural_language,
-        )
-        self._run_review_prompt(
-            prompt,
-            title="File Explain",
-            subtitle=rel_path,
-            command_name="explain",
-            metadata={"target_path": rel_path, "kind": "file", "related_files": related},
-        )
+        self._execute_explain_analysis(rel_path, auto_generated=False)
 
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()
@@ -3720,10 +3960,26 @@ class HermesCLI:
 
     def _handle_review_command(self, cmd: str) -> None:
         parts = cmd.strip().split(maxsplit=3)
-        action = parts[1].lower() if len(parts) > 1 else "status"
+        action = parts[1].lower() if len(parts) > 1 else "now"
+        if action in {"now", "run", "manual"}:
+            event = self._review_latest_event
+            if not event:
+                event, error = self._build_synthetic_review_event()
+                if error:
+                    _cprint(f"  (>_<) {error}")
+                    return
+            threading.Thread(
+                target=lambda event=event: self._execute_event_review(event, auto_generated=False),
+                daemon=True,
+                name=f"manual-review-{uuid.uuid4().hex[:6]}",
+            ).start()
+            _cprint("  Queued diff review in the background.")
+            return
         if action == "on":
+            self._review_enabled = True
+            self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. Review analysis stays manual; run /review explicitly when you want it.")
+                _cprint("  ✅ File watching enabled. review/diff/explain automation is on; flow stays manual.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -3822,7 +4078,7 @@ class HermesCLI:
             _cprint("  Usage: /review exclude [list|add <glob>|remove <glob>|clear]")
             return
 
-        _cprint("  Usage: /review [on|off|status|last|apply|promote|exclude ...]")
+        _cprint("  Usage: /review [now|on|off|status|last|apply|promote|exclude ...]")
 
     def process_command(self, command: str) -> bool:
         """
@@ -5687,7 +5943,13 @@ class HermesCLI:
             _welcome_color = "#E6F1FF"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
-        _cprint("  2x2 panes start idle. Use /flow set <path>, /explain, /review, and /diff manually from the prompt below.")
+        if self._sync_enabled or self._review_enabled:
+            if self._start_review_watcher():
+                _cprint("  review/diff/explain automation is on. Set a flow target with /flow set <path>; flow itself stays manual.")
+            else:
+                _cprint("  ⚠️  Automatic pane updates could not start; use /sync on after fixing auth.")
+        else:
+            _cprint("  2x2 panes start idle. Use /flow set <path>, /explain, /review, and /diff manually from the prompt below.")
 
         # State for async operation
         self._agent_running = False
@@ -6259,7 +6521,7 @@ class HermesCLI:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
-            return "message or /flow set <path>, /flow <symbol> [path], /explain [path], /review ..., /diff [notes]"
+            return "message or /flow set <path>, /flow <symbol> [path], /explain [path], /review [now|last|...], /diff [notes]"
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
