@@ -33,6 +33,11 @@ from hermes_cli.runtime_provider import (
     resolve_runtime_provider,
 )
 
+FLOW_CODE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".cs", ".rb", ".php", ".sh", ".bash", ".zsh"}
+FLOW_LOW_SIGNAL_DIRS = {"test", "tests", "testing", "spec", "specs", "docs", "doc", "assets", "static", "public", "images", "img", "fixtures", "examples", "example", "samples", "vendor", "third_party", "dist", "build"}
+FLOW_ENTRY_HINTS = ("main", "app", "server", "run", "cli", "index", "train", "api", "manage", "worker", "daemon", "bootstrap", "launch", "start", "serve", "web", "chat")
+FLOW_SYMBOL_PREFERENCES = ("main", "run", "start", "serve", "train", "launch", "bootstrap", "execute", "cli", "app", "create_app")
+
 
 DEFAULT_IGNORE_DIRS = {
     ".git",
@@ -1267,6 +1272,180 @@ def build_diff_explanation_prompt(
     return "\n".join(lines)
 
 
+def _collect_workspace_file_paths(workspace_root: Path, *, max_files: int = 4000) -> list[str]:
+    rel_paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace_root):
+        current_dir = Path(dirpath)
+        dirnames[:] = [d for d in sorted(dirnames) if d not in DEFAULT_IGNORE_DIRS]
+        for filename in sorted(filenames):
+            path = current_dir / filename
+            if should_ignore_path(path, workspace_root):
+                continue
+            rel_path = _safe_relpath(path, workspace_root)
+            if rel_path:
+                rel_paths.append(rel_path)
+                if len(rel_paths) >= max_files:
+                    return rel_paths
+    return rel_paths
+
+
+def _collect_readme_text(workspace_root: Path, *, max_files: int = 6, max_chars: int = 32_000) -> str:
+    readmes: list[tuple[int, str]] = []
+    for rel_path in _collect_workspace_file_paths(workspace_root, max_files=400):
+        p = Path(rel_path)
+        if not p.name.lower().startswith("readme"):
+            continue
+        depth = len(p.parts)
+        readmes.append((depth, rel_path))
+    chunks: list[str] = []
+    total = 0
+    for _depth, rel_path in sorted(readmes)[:max_files]:
+        text = _load_text_file(workspace_root / rel_path, max_file_bytes=DEFAULT_MAX_FILE_BYTES)
+        if not text:
+            continue
+        excerpt = _truncate_text(text, min(8_000, max_chars - total))
+        chunks.append(excerpt)
+        total += len(excerpt)
+        if total >= max_chars:
+            break
+    return "\n\n".join(chunks)
+
+
+def _is_probably_flow_source(rel_path: str) -> bool:
+    p = Path(rel_path.lower())
+    if any(part in FLOW_LOW_SIGNAL_DIRS for part in p.parts[:-1]):
+        return False
+    if p.name in {"package.json", "makefile", "dockerfile"}:
+        return False
+    return p.suffix in FLOW_CODE_SUFFIXES or p.name in {"makefile", "dockerfile"}
+
+
+def _readme_mention_score(readme_text: str, rel_path: str) -> int:
+    if not readme_text:
+        return 0
+    lowered = readme_text.lower()
+    target = rel_path.lower()
+    basename = Path(target).name
+    stem = Path(target).stem
+    score = 0
+    if target in lowered:
+        score += 80
+    if basename and re.search(rf"`[^`]*{re.escape(basename)}[^`]*`", lowered):
+        score += 45
+    elif basename and re.search(rf"(^|[^a-z0-9_]){re.escape(basename)}([^a-z0-9_]|$)", lowered):
+        score += 18
+    if stem and stem not in {"main", "app", "run", "index"} and re.search(rf"`[^`]*{re.escape(stem)}[^`]*`", lowered):
+        score += 10
+    if score and re.search(r"(run|start|serve|launch|train|entrypoint|pipeline|workflow|script|command)", lowered):
+        score += 10
+    return score
+
+
+def _flow_candidate_score(rel_path: str, *, readme_text: str, changed: bool = False) -> int:
+    p = Path(rel_path.lower())
+    stem = p.stem
+    filename = p.name
+    score = 0
+    score += _readme_mention_score(readme_text, rel_path)
+    if changed:
+        score += 35
+    if any(part in {"cmd", "bin", "scripts", "runs"} for part in p.parts[:-1]):
+        score += 35
+    if any(part in {"src", "app", "server", "cli", "web"} for part in p.parts[:-1]):
+        score += 14
+    if any(token == stem for token in FLOW_ENTRY_HINTS):
+        score += 40
+    score += sum(10 for token in FLOW_ENTRY_HINTS if token in filename and token != stem)
+    if p.name == "__main__.py":
+        score += 60
+    if p.suffix in {".py", ".go", ".rs", ".js", ".ts", ".tsx", ".jsx"}:
+        score += 10
+    if p.suffix in {".sh", ".bash", ".zsh"}:
+        score += 8
+    if any(part in FLOW_LOW_SIGNAL_DIRS for part in p.parts[:-1]):
+        score -= 70
+    return score
+
+
+def _resolve_script_reference(rel_path: str, ref: str) -> str:
+    value = str(ref or "").strip().strip("\"'")
+    if not value:
+        return ""
+    value = value.split(":", 1)[0].strip()
+    base = Path(rel_path).parent
+    normalized = (base / value).resolve() if value.startswith(("./", "../")) else Path(value)
+    return str(normalized).replace("\\", "/")
+
+
+def _extract_script_dispatch_target(workspace_root: Path, rel_path: str, text: str, available_paths: set[str]) -> Optional[str]:
+    patterns = [
+        re.compile(r"(?:^|\s)(?:python|python3|uv\s+run\s+python)\s+-m\s+([A-Za-z_][A-Za-z0-9_\.]*)"),
+        re.compile(r"(?:^|\s)(?:python|python3|uv\s+run\s+python)\s+([./A-Za-z0-9_-]+\.py)"),
+        re.compile(r"(?:^|\s)(?:node|bun|deno\s+run)\s+([./A-Za-z0-9_-]+\.(?:js|mjs|cjs|ts|tsx))"),
+        re.compile(r"(?:^|\s)(?:bash|sh|zsh)\s+([./A-Za-z0-9_-]+\.sh)"),
+    ]
+    workspace_prefix = str(workspace_root).replace("\\", "/") + "/"
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            raw = match.group(1).strip()
+            if "." in raw and "/" not in raw and not raw.endswith((".py", ".js", ".ts", ".tsx", ".sh")):
+                candidate = raw.replace(".", "/") + ".py"
+            else:
+                candidate = _resolve_script_reference(rel_path, raw)
+            candidate = candidate.lstrip("./")
+            if candidate in available_paths and _is_probably_flow_source(candidate):
+                return candidate
+            if candidate.startswith(workspace_prefix):
+                trimmed = candidate[len(workspace_prefix):]
+                if trimmed in available_paths and _is_probably_flow_source(trimmed):
+                    return trimmed
+    return None
+
+
+def _infer_flow_symbol(rel_path: str, text: str) -> str:
+    for symbol in FLOW_SYMBOL_PREFERENCES:
+        patterns = [
+            rf"^\s*(?:async\s+)?def\s+{re.escape(symbol)}\b",
+            rf"^\s*class\s+{re.escape(symbol)}\b",
+            rf"^\s*(?:export\s+)?(?:async\s+)?function\s+{re.escape(symbol)}\b",
+            rf"^\s*(?:export\s+)?(?:const|let|var)\s+{re.escape(symbol)}\s*=",
+            rf"^\s*func\s+{re.escape(symbol)}\b",
+            rf"^\s*fn\s+{re.escape(symbol)}\b",
+            rf"^\s*{re.escape(symbol)}\s*\(\)\s*\{{",
+        ]
+        for pattern in patterns:
+            if re.search(pattern, text, re.MULTILINE | re.IGNORECASE):
+                return symbol
+    generic_patterns = [
+        re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.MULTILINE),
+        re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.MULTILINE),
+        re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.MULTILINE),
+        re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", re.MULTILINE),
+        re.compile(r"^\s*func\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.MULTILINE),
+        re.compile(r"^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.MULTILINE),
+        re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", re.MULTILINE),
+    ]
+    for pattern in generic_patterns:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return Path(rel_path).stem
+
+
+def _make_flow_target(workspace_root: Path, rel_path: str, *, reason: str, available_paths: set[str]) -> dict[str, str]:
+    chosen_path = rel_path
+    text = _load_text_file(workspace_root / rel_path, max_file_bytes=DEFAULT_MAX_FILE_BYTES) or ""
+    redirected = None
+    if Path(rel_path).suffix.lower() in {".sh", ".bash", ".zsh"}:
+        redirected = _extract_script_dispatch_target(workspace_root, rel_path, text, available_paths)
+    if redirected:
+        chosen_path = redirected
+        text = _load_text_file(workspace_root / redirected, max_file_bytes=DEFAULT_MAX_FILE_BYTES) or ""
+        reason = f"{reason}; dispatched from {rel_path}"
+    symbol = _infer_flow_symbol(chosen_path, text)
+    return {"path": chosen_path, "symbol": symbol, "reason": reason}
+
+
 def _looks_like_entrypoint(rel_path: str) -> bool:
     lowered = rel_path.lower()
     filename = Path(lowered).name
@@ -1376,6 +1555,7 @@ def build_sync_planner_prompt(
             "Treat the workspace itself as the analysis scope.",
             "For flow_targets, prioritize the main entrypoint, orchestration layer, router, app factory, or central control-flow symbol for this workspace.",
             "Do not prioritize recently changed files because startup sync is workspace-based, not diff-based.",
+            "Prefer files explicitly recommended in README or getting-started docs, startup scripts, and the code they dispatch into.",
             "Choose symbols that best explain how this workspace starts, routes requests, or coordinates work.",
         ])
     else:
@@ -1425,7 +1605,6 @@ def _default_sync_plan(
 ) -> dict[str, Any]:
     file_candidates = [item["path"] for item in project_context.get("files", [])]
     top_files = [path for path in file_candidates if Path(path).parent == Path()]
-    flow_targets = []
     explain_targets = []
     seed_paths = list(changed_paths) if changed_paths else []
     for path in file_candidates:
@@ -1441,16 +1620,38 @@ def _default_sync_plan(
         seen_dirs.add(rel_dir)
         if len([item for item in explain_targets if item.get('kind') == 'directory']) >= DEFAULT_STARTUP_DIR_TARGETS:
             break
-    for path in seed_paths:
-        if not _looks_like_entrypoint(path):
+
+    available_paths = [path for path in _collect_workspace_file_paths(workspace_root) if _is_probably_flow_source(path)]
+    if not available_paths:
+        available_paths = [path for path in file_candidates if _is_probably_flow_source(path)]
+    available_path_set = set(available_paths)
+    readme_text = _collect_readme_text(workspace_root)
+    ranked_paths = sorted(
+        available_paths,
+        key=lambda rel_path: (-_flow_candidate_score(rel_path, readme_text=readme_text, changed=rel_path in changed_paths), len(Path(rel_path).parts), rel_path),
+    )
+    flow_targets = []
+    seen_flow_paths: set[str] = set()
+    for rel_path in ranked_paths:
+        score = _flow_candidate_score(rel_path, readme_text=readme_text, changed=rel_path in changed_paths)
+        if score <= 0:
             continue
-        symbol = Path(path).stem
-        flow_targets.append({"path": path, "symbol": symbol, "reason": "entrypoint-like file"})
+        reason = "README-guided entrypoint" if _readme_mention_score(readme_text, rel_path) else ("entrypoint-like file" if _looks_like_entrypoint(rel_path) else "representative executable file")
+        target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_path_set)
+        if target["path"] in seen_flow_paths:
+            continue
+        seen_flow_paths.add(target["path"])
+        flow_targets.append(target)
         if len(flow_targets) >= DEFAULT_STARTUP_FLOW_TARGETS:
             break
     if not flow_targets and top_files:
+        fallback_paths = available_path_set or set(top_files)
         for path in top_files[:DEFAULT_STARTUP_FLOW_TARGETS]:
-            flow_targets.append({"path": path, "symbol": Path(path).stem, "reason": "top-level file"})
+            target = _make_flow_target(workspace_root, path, reason="top-level file", available_paths=fallback_paths)
+            if target["path"] in seen_flow_paths:
+                continue
+            seen_flow_paths.add(target["path"])
+            flow_targets.append(target)
     return {
         "flow_targets": flow_targets,
         "explain_targets": explain_targets[: DEFAULT_STARTUP_FILE_TARGETS + DEFAULT_STARTUP_DIR_TARGETS],
@@ -1522,7 +1723,8 @@ def plan_sync_targets(
             if not target.is_file() or should_ignore_review_path(target, workspace_root):
                 continue
             seen.add(rel_path)
-            normalized.append({"path": rel_path, "symbol": symbol or Path(rel_path).stem, "reason": str(item.get("reason") or "planned flow target")})
+            file_text = _load_text_file(target, max_file_bytes=DEFAULT_MAX_FILE_BYTES) or ""
+            normalized.append({"path": rel_path, "symbol": symbol or _infer_flow_symbol(rel_path, file_text), "reason": str(item.get("reason") or "planned flow target")})
         return normalized[: DEFAULT_STARTUP_FLOW_TARGETS if _normalize_sync_kind(sync_kind) == "startup" else DEFAULT_INCREMENTAL_FLOW_TARGETS]
 
     return {
@@ -1609,15 +1811,28 @@ def _select_flow_targets(
         ignore_globs=ignore_globs,
         limit=file_limit,
     )
+    readme_text = _collect_readme_text(workspace_root) if sync_kind == 'startup' else ""
+    available_paths = set(candidates)
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda rel_path: (-_flow_candidate_score(rel_path, readme_text=readme_text, changed=rel_path in changed_paths), len(Path(rel_path).parts), rel_path),
+    )
     targets: list[dict[str, str]] = []
-    for rel_path in candidates:
-        symbol = Path(rel_path).stem
+    seen_paths: set[str] = set()
+    for rel_path in ranked_candidates:
         reason = 'changed file' if rel_path in changed_paths else 'representative file'
         if sync_kind == 'startup':
-            reason = 'workspace representative file'
-        if _looks_like_entrypoint(rel_path):
+            if _readme_mention_score(readme_text, rel_path):
+                reason = 'README-guided entrypoint'
+            else:
+                reason = 'workspace representative file'
+        elif _looks_like_entrypoint(rel_path):
             reason = 'entrypoint-like file'
-        targets.append({'path': rel_path, 'symbol': symbol, 'reason': reason})
+        target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
+        if target['path'] in seen_paths:
+            continue
+        seen_paths.add(target['path'])
+        targets.append(target)
         if len(targets) >= limit:
             break
     return targets

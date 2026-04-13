@@ -401,6 +401,50 @@ def test_generate_sync_bundle_derives_explain_targets_from_llm_selected_flow(tmp
     assert bundle["explain"]["metadata"]["selection_reason"] == "derived from flow targets"
 
 
+def test_default_sync_plan_prefers_readme_guided_dispatch_target(tmp_path):
+    import hermes_cli.codex_companion as companion
+
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "README.md").write_text(
+        "The main pipeline lives in `runs/speedrun.sh`. Run `bash runs/speedrun.sh` to train and chat.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "runs" / "speedrun.sh").write_text(
+        "#!/usr/bin/env bash\npython -m scripts.base_train\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts" / "base_train.py").write_text(
+        "def main():\n    return train()\n\ndef train():\n    return 1\n",
+        encoding="utf-8",
+    )
+
+    project_context = companion.collect_project_summary(tmp_path)
+    plan = companion._default_sync_plan(tmp_path, project_context=project_context, changed_paths=[])
+
+    first = plan["flow_targets"][0]
+    assert first["path"] == "scripts/base_train.py"
+    assert first["symbol"] == "main"
+    assert "README" in first["reason"] or "dispatched" in first["reason"]
+
+
+def test_default_sync_plan_picks_main_like_source_without_readme(tmp_path):
+    import hermes_cli.codex_companion as companion
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "src" / "worker.py").write_text("def process():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_main.py").write_text("def test_it():\n    assert True\n", encoding="utf-8")
+
+    project_context = companion.collect_project_summary(tmp_path)
+    plan = companion._default_sync_plan(tmp_path, project_context=project_context, changed_paths=[])
+
+    first = plan["flow_targets"][0]
+    assert first["path"] == "src/main.py"
+    assert first["symbol"] == "main"
+
+
 def test_store_command_output_writes_readable_multiline_json(tmp_path):
     store = HermesStore(root=tmp_path / "store")
 
