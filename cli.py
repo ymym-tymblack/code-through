@@ -6886,7 +6886,7 @@ class HermesCLI:
                 text=str(pane_state.get("body") or ""),
                 read_only=True,
                 scrollbar=True,
-                focusable=True,
+                focusable=False,
                 wrap_lines=True,
                 style='class:pane-body',
             )
@@ -6927,7 +6927,8 @@ class HermesCLI:
                 input_rule_bot,
                 voice_status_bar,
                 CompletionsMenu(max_height=12, scroll_offset=1),
-            ])
+            ]),
+            focused_element=input_area,
         )
 
         # Style for the application
