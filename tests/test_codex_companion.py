@@ -497,17 +497,18 @@ def test_resolve_analysis_runtime_prefers_explicit_analysis_config_over_fallback
     assert runtime["source"] == "analysis-config"
 
 
-def test_resolve_analysis_runtime_auto_detects_local_vllm_before_fallback():
-    with patch("hermes_cli.codex_companion.load_config", return_value={}), \
-         patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=False), \
-         patch("hermes_cli.codex_companion.fetch_api_models", return_value=["local-gemma"]):
+def test_resolve_analysis_runtime_auto_detects_local_vllm_before_fallback(monkeypatch):
+    monkeypatch.setenv("VLLM_API_KEY", "local-vllm")
+
+    with patch("hermes_cli.codex_companion.load_config", return_value={}),          patch("hermes_cli.codex_companion._has_explicit_analysis_config", return_value=False),          patch("hermes_cli.codex_companion.fetch_api_models", return_value=["local-gemma"]) as fetch_mock:
         runtime = resolve_analysis_runtime(
             fallback_runtime={"provider": "openai-codex", "base_url": "https://example.com", "api_key": "fallback", "api_mode": "codex_responses", "source": "main-session"},
             requested_provider="openai-codex",
         )
 
+    assert fetch_mock.call_args.args[0] == "local-vllm"
     assert runtime["base_url"] == "http://127.0.0.1:8000/v1"
-    assert runtime["api_key"] == ""
+    assert runtime["api_key"] == "local-vllm"
     assert runtime["model"] == "local-gemma"
     assert runtime["source"] == "analysis-auto-local"
 

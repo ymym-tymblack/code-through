@@ -941,7 +941,8 @@ def _default_analysis_model() -> str:
 
 def _detect_local_analysis_runtime() -> Optional[dict[str, Any]]:
     base_url = "http://127.0.0.1:8000/v1"
-    models = fetch_api_models("", base_url, timeout=0.4) or []
+    api_key = os.getenv("VLLM_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    models = fetch_api_models(api_key, base_url, timeout=0.4) or []
     selected_model = next((model.strip() for model in models if isinstance(model, str) and model.strip()), "")
     if not selected_model:
         return None
@@ -949,12 +950,13 @@ def _detect_local_analysis_runtime() -> Optional[dict[str, Any]]:
     try:
         runtime = resolve_runtime_provider(
             requested="custom",
+            explicit_api_key=api_key or None,
             explicit_base_url=base_url,
         )
     except Exception:
         return None
     runtime["base_url"] = base_url
-    runtime["api_key"] = ""
+    runtime["api_key"] = api_key
     runtime["api_mode"] = "chat_completions"
     runtime["model"] = selected_model
     runtime["source"] = "analysis-auto-local"
