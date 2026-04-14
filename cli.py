@@ -3957,46 +3957,39 @@ class HermesCLI:
             if not directory_context.get("entries"):
                 _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
                 return
-            self._begin_analysis_activity(
-                command_name="explain",
+            prompt = build_directory_explanation_prompt(
+                workspace_root,
+                target_path=rel_path,
+                directory_context=directory_context,
+                natural_language=natural_language,
+            )
+            self._run_review_prompt(
+                prompt,
                 title="Directory Explain",
                 subtitle=rel_path,
+                command_name="explain",
                 metadata={"target_path": rel_path, "kind": "directory"},
             )
-            def _run_explain_dir() -> None:
-                try:
-                    self._execute_explain_analysis(rel_path, auto_generated=False)
-                finally:
-                    self._end_analysis_activity()
-            threading.Thread(
-                target=_run_explain_dir,
-                daemon=True,
-                name=f"explain-task-{uuid.uuid4().hex[:6]}",
-            ).start()
-            _cprint("  Queued explain analysis in the background.")
             return
 
         if not target.is_file():
             _cprint(f"  (>_<) File not found: {target_path}")
             return
 
-        self._begin_analysis_activity(
-            command_name="explain",
+        related = collect_related_context(workspace_root, changed_paths=[rel_path], max_related_files=4, max_total_chars=10_000)
+        prompt = build_file_explanation_prompt(
+            workspace_root,
+            target_path=rel_path,
+            related_files=related,
+            natural_language=natural_language,
+        )
+        self._run_review_prompt(
+            prompt,
             title="File Explain",
             subtitle=rel_path,
-            metadata={"target_path": rel_path, "kind": "file"},
+            command_name="explain",
+            metadata={"target_path": rel_path, "kind": "file", "related_files": related},
         )
-        def _run_explain_file() -> None:
-            try:
-                self._execute_explain_analysis(rel_path, auto_generated=False)
-            finally:
-                self._end_analysis_activity()
-        threading.Thread(
-            target=_run_explain_file,
-            daemon=True,
-            name=f"explain-task-{uuid.uuid4().hex[:6]}",
-        ).start()
-        _cprint("  Queued explain analysis in the background.")
 
     def _handle_flow_command(self, cmd: str) -> None:
         parts = cmd.strip().split()

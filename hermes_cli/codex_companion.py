@@ -1807,6 +1807,12 @@ def _select_flow_targets(
             return set()
 
         refs: set[str] = set()
+        basename_map: dict[str, set[str]] = {}
+        stem_map: dict[str, set[str]] = {}
+        for candidate_path in available_paths:
+            candidate_obj = Path(candidate_path)
+            basename_map.setdefault(candidate_obj.name.lower(), set()).add(candidate_path)
+            stem_map.setdefault(candidate_obj.stem.lower(), set()).add(candidate_path)
 
         def _try_add(raw: str) -> None:
             token = str(raw or "").strip().strip("`\"'")
@@ -1824,8 +1830,20 @@ def _select_flow_targets(
                     return
             else:
                 rel = normalized.lstrip("./")
-            if rel in available_paths:
-                refs.add(rel)
+            candidate_refs = [rel]
+            lowered_name = Path(normalized).name.lower()
+            lowered_stem = Path(normalized).stem.lower()
+            if lowered_name:
+                name_matches = basename_map.get(lowered_name, set())
+                if len(name_matches) == 1:
+                    candidate_refs.extend(sorted(name_matches))
+            if lowered_stem and "." not in Path(normalized).name:
+                stem_matches = stem_map.get(lowered_stem, set())
+                if len(stem_matches) == 1:
+                    candidate_refs.extend(sorted(stem_matches))
+            for candidate_ref in candidate_refs:
+                if candidate_ref in available_paths:
+                    refs.add(candidate_ref)
 
         for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", doc_text):
             _try_add(match.group(1))
@@ -1864,10 +1882,15 @@ def _select_flow_targets(
         doc_refs = _doc_references(guide_text, available_paths)
 
         main_content_scores: dict[str, int] = {}
-        if not doc_refs:
-            for rel_path in all_candidates:
+        for rel_path in all_candidates:
                 stem = Path(rel_path).stem.lower()
-                if not stem.startswith("main"):
+                filename = Path(rel_path).name.lower()
+                if not (
+                    stem.startswith("main")
+                    or _looks_like_entrypoint(rel_path)
+                    or rel_path in doc_refs
+                    or any(token in filename for token in FLOW_ENTRY_HINTS)
+                ):
                     continue
                 file_path = workspace_root / rel_path
                 file_text = _load_text_file(file_path, max_file_bytes=DEFAULT_MAX_FILE_BYTES) or ""
@@ -1881,8 +1904,8 @@ def _select_flow_targets(
                     score += 90
                 if re.search(r"\b(?:main|run|start|serve|bootstrap|launch)\s*\(", file_text):
                     score += 35
-                if re.search(r"\b(?:app|router|server|cli)\b", file_text, re.IGNORECASE):
-                    score += 20
+                if re.search(r"\b(?:app|router|server|cli|argparse|click|typer|fastapi|flask)\b", file_text, re.IGNORECASE):
+                    score += 25
                 if Path(rel_path).suffix.lower() in {".sh", ".bash", ".zsh"}:
                     redirected = _extract_script_dispatch_target(workspace_root, rel_path, file_text, available_paths)
                     if redirected:
@@ -1896,7 +1919,7 @@ def _select_flow_targets(
                 -(
                     _flow_candidate_score(rel_path, readme_text=guide_text, changed=False)
                     + (120 if rel_path in doc_refs else 0)
-                    + (main_content_scores.get(rel_path, 0) if not doc_refs else 0)
+                    + main_content_scores.get(rel_path, 0)
                     + (25 if _looks_like_entrypoint(rel_path) else 0)
                 ),
                 len(Path(rel_path).parts),
@@ -1912,7 +1935,7 @@ def _select_flow_targets(
                 continue
             if rel_path in doc_refs:
                 reason = "doc-guided entrypoint"
-            elif main_content_scores.get(rel_path, 0) > 0 and not doc_refs:
+            elif main_content_scores.get(rel_path, 0) > 0:
                 reason = "main-file content indicates entrypoint"
             else:
                 reason = "workspace representative file"
