@@ -1396,7 +1396,7 @@ class HermesCLI:
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
         self._sync_enabled = True
-        self._auto_sync_commands = {"review": True, "diff": True, "explain": True, "flow": True}
+        self._auto_sync_commands = {"flow": True}
         self._auto_analysis_queue: queue.Queue = queue.Queue()
         self._auto_analysis_thread: Optional[threading.Thread] = None
         self._auto_analysis_pending: set[str] = set()
@@ -1405,12 +1405,9 @@ class HermesCLI:
         self._sync_latest_event: Optional[dict[str, Any]] = None
         self._sync_panes: dict[str, dict[str, Any]] = {
             "flow": {"title": "Flow", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
-            "explain": {"title": "Explain", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
-            "review": {"title": "Review", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
-            "diff": {"title": "Diff", "subtitle": "Waiting for sync", "body": "", "updated_at": 0.0, "status": "idle", "entries": []},
         }
         self._sync_pane_history_limit = 3
-        self._pane_order = ["flow", "explain", "review", "diff"]
+        self._pane_order = ["flow"]
         self._pane_widgets: dict[str, Any] = {}
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
@@ -3079,15 +3076,16 @@ class HermesCLI:
         except Exception:
             return
         for command, payload in outputs.items():
-            if not payload:
+            if not payload or command not in self._sync_panes:
                 continue
+            metadata = dict(payload.get("metadata") or {})
             self._set_sync_pane_output(
                 command,
                 title=str(payload.get("title") or command.title()),
                 subtitle=str(payload.get("subtitle") or ""),
                 body=str(payload.get("content", {}).get("text", "") or ""),
                 status=str(payload.get("status") or "ok"),
-                metadata=dict(payload.get("metadata") or {}),
+                metadata=metadata,
             )
 
     @staticmethod
@@ -3361,14 +3359,8 @@ class HermesCLI:
 
     def _schedule_auto_analyses(self, event: Optional[dict[str, Any]]) -> None:
         event_copy = dict(event) if isinstance(event, dict) else None
-        if self._auto_sync_commands.get("review") and event_copy:
-            self._enqueue_auto_analysis("auto:review", lambda event=event_copy: self._execute_event_review(event, auto_generated=True))
-        if self._auto_sync_commands.get("diff"):
-            self._enqueue_auto_analysis("auto:diff", lambda: self._execute_diff_analysis(auto_generated=True))
-        if self._auto_sync_commands.get("explain") and self._flow_target_matches_event(event_copy):
-            target = str(self._flow_target_path or "")
-            if target:
-                self._enqueue_auto_analysis("auto:explain", lambda target_path=target: self._execute_explain_analysis(target_path, auto_generated=True))
+        if self._auto_sync_commands.get("flow"):
+            self._enqueue_auto_analysis("auto:flow", lambda: self._execute_flow_startup_sync(auto_generated=True))
 
     def _begin_analysis_activity(
         self,
@@ -3652,6 +3644,52 @@ class HermesCLI:
             },
         )
 
+    def _execute_flow_startup_sync(self, *, auto_generated: bool = False) -> None:
+        runtime = self._resolve_analysis_runtime()
+        if runtime is None:
+            if not auto_generated:
+                _cprint("  (>_<) Cannot run flow analysis: no valid analysis runtime.")
+            return
+        try:
+            from hermes_cli.codex_companion import HermesStore, generate_sync_bundle
+
+            sync_cfg = CLI_CONFIG.get("sync", {}) or {}
+            review_cfg = CLI_CONFIG.get("review", {}) or {}
+            effective_cfg = {**review_cfg, **sync_cfg}
+            bundle = generate_sync_bundle(
+                self.workspace_root,
+                model=getattr(self, "model", None),
+                runtime=runtime,
+                natural_language=self.review_natural_language,
+                ignore_globs=effective_cfg.get("exclude_globs", []),
+                sync_kind="startup",
+                commands=("flow",),
+            )
+            pane_payload = dict(bundle.get("flow") or {})
+            metadata = dict(pane_payload.get("metadata") or {})
+            HermesStore().save_command_output(
+                command="flow",
+                title=str(pane_payload.get("title") or "Flow"),
+                subtitle=str(pane_payload.get("subtitle") or ""),
+                body=str(pane_payload.get("body") or ""),
+                workspace_root=str(self.workspace_root),
+                session_id=str(getattr(self, "session_id", "") or ""),
+                status="ok" if pane_payload.get("body") else "error",
+                metadata=metadata,
+            )
+            self._set_sync_pane_output(
+                "flow",
+                title=str(pane_payload.get("title") or "Flow"),
+                subtitle=str(pane_payload.get("subtitle") or ""),
+                body=str(pane_payload.get("body") or ""),
+                status="ok" if pane_payload.get("body") else "error",
+                metadata=metadata,
+            )
+        except Exception as exc:
+            self._set_sync_pane_output("flow", title="Flow", subtitle="error", body=str(exc), status="error")
+            if not auto_generated:
+                _cprint(f"  ❌ Flow sync failed: {exc}")
+
     def _execute_explain_analysis(self, target_path: str, *, auto_generated: bool = False) -> None:
         workspace_root = self.workspace_root
         target, rel_path = self._resolve_flow_target(target_path)
@@ -3731,13 +3769,16 @@ class HermesCLI:
             if bundle:
                 self._sync_latest_bundle = bundle
                 for command, pane_payload in bundle.items():
+                    if command not in self._sync_panes:
+                        continue
+                    metadata = dict(pane_payload.get("metadata") or {})
                     self._set_sync_pane_output(
                         command,
                         title=str(pane_payload.get("title") or command.title()),
                         subtitle=str(pane_payload.get("subtitle") or ""),
                         body=str(pane_payload.get("body") or ""),
                         status="ok",
-                        metadata=dict(pane_payload.get("metadata") or {}),
+                        metadata=metadata,
                     )
             elif payload.get("analysis"):
                 changed = ", ".join(change["path"] for change in (self._review_latest_event or {}).get("changes", [])[:3])
@@ -3804,7 +3845,7 @@ class HermesCLI:
             self._review_enabled = True
             self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. flow/explain/review/diff automation is on.")
+                _cprint("  ✅ File watching enabled. startup flow automation is on.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -3822,12 +3863,12 @@ class HermesCLI:
             return
         if action == "now":
             self._schedule_auto_analyses(self._review_latest_event)
-            _cprint("  Queued automatic flow/explain/review/diff refresh tasks.")
+            _cprint("  Queued automatic flow refresh.")
             return
         if action == "last":
-            target = parts[2].strip().lower() if len(parts) > 2 else "review"
-            if target not in {"flow", "explain", "review", "diff"}:
-                _cprint("  Usage: /sync last [flow|explain|review|diff]")
+            target = parts[2].strip().lower() if len(parts) > 2 else "flow"
+            if target not in {"flow"}:
+                _cprint("  Usage: /sync last [flow]")
                 return
             self._load_sync_outputs_from_store()
             pane = self._sync_panes.get(target, {})
@@ -3836,7 +3877,7 @@ class HermesCLI:
                 return
             self._render_review_panel(str(pane.get("title") or target.title()), str(pane.get("body") or ""), subtitle=str(pane.get("subtitle") or ""))
             return
-        _cprint("  Usage: /sync [on|off|status|now|last [flow|explain|review|diff]]")
+        _cprint("  Usage: /sync [on|off|status|now|last [flow]]")
 
     def _run_review_prompt(
         self,
@@ -4251,7 +4292,7 @@ class HermesCLI:
             self._review_enabled = True
             self._sync_enabled = True
             if self._start_review_watcher():
-                _cprint("  ✅ File watching enabled. flow/explain/review/diff automation is on.")
+                _cprint("  ✅ File watching enabled. startup flow automation is on.")
             else:
                 _cprint("  (>_<) Failed to enable file watching.")
             return
@@ -6231,11 +6272,11 @@ class HermesCLI:
         self.console.print()
         if self._sync_enabled or self._review_enabled:
             if self._start_review_watcher():
-                _cprint("  flow/explain/review/diff automation is on. Use /sync last flow if you want to reopen the latest flow pane output.")
+                _cprint("  startup flow automation is on. Use /sync last flow to reopen the latest flow output.")
             else:
                 _cprint("  ⚠️  Automatic pane updates could not start; use /sync on after fixing auth.")
         else:
-            _cprint("  2x2 panes start idle until the first sync completes. You can still run /flow, /explain, /review, and /diff manually.")
+            _cprint("  Flow pane starts idle until the first sync completes. You can still run /flow, /explain, /review, and /diff manually.")
 
         # State for async operation
         self._agent_running = False
@@ -7162,7 +7203,7 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
-        # Layout: four persistent sync panes above the prompt widgets.
+        # Layout: a single persistent flow pane above the prompt widgets.
         self._load_sync_outputs_from_store()
         pane_text_areas: dict[str, TextArea] = {}
 
@@ -7189,14 +7230,8 @@ class HermesCLI:
             ])
 
         flow_pane = _make_pane('flow')
-        explain_pane = _make_pane('explain')
-        review_pane = _make_pane('review')
-        diff_pane = _make_pane('diff')
 
-        sync_grid = HSplit([
-            VSplit([flow_pane, explain_pane], padding=1),
-            VSplit([review_pane, diff_pane], padding=1),
-        ], padding=1)
+        sync_grid = HSplit([flow_pane], padding=1)
 
         layout = Layout(
             HSplit([

@@ -2061,9 +2061,11 @@ def generate_sync_bundle(
     natural_language: Optional[str] = None,
     ignore_globs: Optional[Sequence[str]] = None,
     sync_kind: str = 'incremental',
+    commands: Optional[Sequence[str]] = None,
 ) -> dict[str, dict[str, Any]]:
     workspace_root = workspace_root.resolve()
     sync_kind = _normalize_sync_kind(sync_kind)
+    enabled_commands = tuple(command for command in (commands or SYNC_COMMANDS) if command in SYNC_COMMANDS) or ('flow',)
     changed_paths = [str(change.get('path')) for change in (event or {}).get('changes', []) if change.get('path')]
     bundle: dict[str, dict[str, Any]] = {}
 
@@ -2072,126 +2074,133 @@ def generate_sync_bundle(
         'workspace_root': str(workspace_root),
         'changes': [],
     }
-    review_result = analyze_change_set(
-        review_event,
-        model=model,
-        runtime=runtime,
-        natural_language=natural_language,
-        ignore_globs=ignore_globs,
-    )
-    bundle['review'] = {
-        'title': 'Diff Review',
-        'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'startup snapshot',
-        'body': review_result.get('analysis', ''),
-        'metadata': {
-            'sync_kind': sync_kind,
-            'targets': [{'path': path} for path in changed_paths],
-            'related_files': review_result.get('related_files', []),
-            'promotion_candidates': review_result.get('promotion_candidates', []),
-            'selection_reason': 'changed files' if changed_paths else 'workspace snapshot',
-            **_runtime_metadata_from_result(review_result),
-            'source_event_id': review_event.get('event_id', ''),
-        },
-    }
-
-    flow_targets = _select_flow_targets(
-        workspace_root,
-        changed_paths=changed_paths,
-        ignore_globs=ignore_globs,
-        model=model,
-        runtime=runtime,
-        natural_language=natural_language,
-        sync_kind=sync_kind,
-    )
-    flow_parts: list[str] = []
-    flow_runtime_meta: dict[str, str] = {}
-    for item in flow_targets:
-        result = explain_file(
-            workspace_root,
-            target_path=item['path'],
-            symbol=item['symbol'],
+    if 'review' in enabled_commands:
+        review_result = analyze_change_set(
+            review_event,
             model=model,
             runtime=runtime,
             natural_language=natural_language,
+            ignore_globs=ignore_globs,
         )
-        if not flow_runtime_meta:
-            flow_runtime_meta = _runtime_metadata_from_result(result)
-        flow_parts.append(f"# {item['symbol']} @ {item['path']}\n{result.get('analysis', '')}".strip())
-    bundle['flow'] = {
-        'title': 'Flow',
-        'subtitle': ', '.join(item['symbol'] for item in flow_targets[:3]) or 'No targets',
-        'body': '\n\n'.join(part for part in flow_parts if part).strip(),
-        'metadata': {
-            'sync_kind': sync_kind,
-            'targets': flow_targets,
-            'selection_reason': 'workspace-based llm planner' if sync_kind == 'startup' else 'changed files first, then representative files',
-            **flow_runtime_meta,
-        },
-    }
+        bundle['review'] = {
+            'title': 'Diff Review',
+            'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'startup snapshot',
+            'body': review_result.get('analysis', ''),
+            'metadata': {
+                'sync_kind': sync_kind,
+                'targets': [{'path': path} for path in changed_paths],
+                'related_files': review_result.get('related_files', []),
+                'promotion_candidates': review_result.get('promotion_candidates', []),
+                'selection_reason': 'changed files' if changed_paths else 'workspace snapshot',
+                **_runtime_metadata_from_result(review_result),
+                'source_event_id': review_event.get('event_id', ''),
+            },
+        }
 
-    explain_targets = _select_explain_targets(flow_targets, sync_kind=sync_kind)
-    explain_parts: list[str] = []
-    explain_runtime_meta: dict[str, str] = {}
-    for item in explain_targets:
-        rel_path = str(item.get('path') or '')
-        kind = str(item.get('kind') or 'file')
-        if not rel_path:
-            continue
-        if kind == 'directory':
-            result = _explain_directory(
-                workspace_root,
-                target_path=rel_path,
-                model=model,
-                runtime=runtime,
-                natural_language=natural_language,
-            )
-        else:
+    flow_targets: list[dict[str, str]] = []
+    if 'flow' in enabled_commands or 'explain' in enabled_commands:
+        flow_targets = _select_flow_targets(
+            workspace_root,
+            changed_paths=changed_paths,
+            ignore_globs=ignore_globs,
+            model=model,
+            runtime=runtime,
+            natural_language=natural_language,
+            sync_kind=sync_kind,
+        )
+
+    if 'flow' in enabled_commands:
+        flow_parts: list[str] = []
+        flow_runtime_meta: dict[str, str] = {}
+        for item in flow_targets:
             result = explain_file(
                 workspace_root,
-                target_path=rel_path,
+                target_path=item['path'],
+                symbol=item['symbol'],
                 model=model,
                 runtime=runtime,
                 natural_language=natural_language,
             )
-        if not explain_runtime_meta:
-            explain_runtime_meta = _runtime_metadata_from_result(result)
-        explain_parts.append(f"# {rel_path}\n{result.get('analysis', '')}".strip())
-    bundle['explain'] = {
-        'title': 'Explain',
-        'subtitle': ', '.join(item['path'] for item in explain_targets[:3]) or 'No targets',
-        'body': '\n\n'.join(part for part in explain_parts if part).strip(),
-        'metadata': {
-            'sync_kind': sync_kind,
-            'targets': explain_targets,
-            'selection_reason': 'derived from flow targets',
-            **explain_runtime_meta,
-        },
-    }
+            if not flow_runtime_meta:
+                flow_runtime_meta = _runtime_metadata_from_result(result)
+            flow_parts.append(f"# {item['symbol']} @ {item['path']}\n{result.get('analysis', '')}".strip())
+        bundle['flow'] = {
+            'title': 'Flow',
+            'subtitle': ', '.join(item['symbol'] for item in flow_targets[:3]) or 'No targets',
+            'body': '\n\n'.join(part for part in flow_parts if part).strip(),
+            'metadata': {
+                'sync_kind': sync_kind,
+                'targets': flow_targets,
+                'selection_reason': 'workspace-based llm planner' if sync_kind == 'startup' else 'changed files first, then representative files',
+                **flow_runtime_meta,
+            },
+        }
 
-    diff_prompt = build_diff_explanation_prompt(
-        workspace_root,
-        event=event,
-        changed_paths=changed_paths,
-        natural_language=natural_language,
-    )
-    diff_result = analyze_prompt(
-        diff_prompt,
-        model=model,
-        session_id=f'store-diff-{uuid.uuid4().hex}',
-        runtime=runtime,
-    )
-    bundle['diff'] = {
-        'title': 'Diff',
-        'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'No tracked changes',
-        'body': diff_result.get('analysis', ''),
-        'metadata': {
-            'sync_kind': sync_kind,
-            'targets': [{'path': path} for path in changed_paths],
-            'selection_reason': 'current git/workspace diff',
-            **_runtime_metadata_from_result(diff_result),
-            'source_event_id': (event or {}).get('event_id', ''),
-        },
-    }
+    if 'explain' in enabled_commands:
+        explain_targets = _select_explain_targets(flow_targets, sync_kind=sync_kind)
+        explain_parts: list[str] = []
+        explain_runtime_meta: dict[str, str] = {}
+        for item in explain_targets:
+            rel_path = str(item.get('path') or '')
+            kind = str(item.get('kind') or 'file')
+            if not rel_path:
+                continue
+            if kind == 'directory':
+                result = _explain_directory(
+                    workspace_root,
+                    target_path=rel_path,
+                    model=model,
+                    runtime=runtime,
+                    natural_language=natural_language,
+                )
+            else:
+                result = explain_file(
+                    workspace_root,
+                    target_path=rel_path,
+                    model=model,
+                    runtime=runtime,
+                    natural_language=natural_language,
+                )
+            if not explain_runtime_meta:
+                explain_runtime_meta = _runtime_metadata_from_result(result)
+            explain_parts.append(f"# {rel_path}\n{result.get('analysis', '')}".strip())
+        bundle['explain'] = {
+            'title': 'Explain',
+            'subtitle': ', '.join(item['path'] for item in explain_targets[:3]) or 'No targets',
+            'body': '\n\n'.join(part for part in explain_parts if part).strip(),
+            'metadata': {
+                'sync_kind': sync_kind,
+                'targets': explain_targets,
+                'selection_reason': 'derived from flow targets',
+                **explain_runtime_meta,
+            },
+        }
+
+    if 'diff' in enabled_commands:
+        diff_prompt = build_diff_explanation_prompt(
+            workspace_root,
+            event=event,
+            changed_paths=changed_paths,
+            natural_language=natural_language,
+        )
+        diff_result = analyze_prompt(
+            diff_prompt,
+            model=model,
+            session_id=f'store-diff-{uuid.uuid4().hex}',
+            runtime=runtime,
+        )
+        bundle['diff'] = {
+            'title': 'Diff',
+            'subtitle': ', '.join(changed_paths[:3]) if changed_paths else 'No tracked changes',
+            'body': diff_result.get('analysis', ''),
+            'metadata': {
+                'sync_kind': sync_kind,
+                'targets': [{'path': path} for path in changed_paths],
+                'selection_reason': 'current git/workspace diff',
+                **_runtime_metadata_from_result(diff_result),
+                'source_event_id': (event or {}).get('event_id', ''),
+            },
+        }
 
     return bundle
 
@@ -2497,6 +2506,7 @@ class CodexCompanionWatcher:
             natural_language=self.natural_language,
             ignore_globs=self.ignore_globs,
             sync_kind="startup",
+            commands=("flow",),
         )
         self._save_sync_bundle(bundle, session_id=self.session_id, output_id_prefix=f"startup-{self.session_id}")
         if self.on_analysis is not None:
