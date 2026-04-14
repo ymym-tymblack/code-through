@@ -1366,6 +1366,11 @@ class HermesCLI:
         self._command_status = ""
         self._analysis_active = 0
         self._analysis_activity_label = ""
+        self._analysis_activity_command = ""
+        self._analysis_activity_title = ""
+        self._analysis_activity_subtitle = ""
+        self._analysis_activity_metadata: dict[str, Any] = {}
+        self._analysis_activity_lines: list[str] = []
         self._analysis_lock = threading.Lock()
         self._attached_images: list[Path] = []
         self._image_counter = 0
@@ -3373,12 +3378,6 @@ class HermesCLI:
         subtitle: str = "",
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        with self._analysis_lock:
-            self._analysis_active += 1
-            label = f"{command_name}: {title}"
-            self._analysis_activity_label = label
-            self._spinner_text = f"⚙ {label}"
-
         pane_metadata = dict(metadata or {})
         if not pane_metadata.get("provider") or not pane_metadata.get("model"):
             runtime = self._resolve_analysis_runtime()
@@ -3386,6 +3385,18 @@ class HermesCLI:
                 pane_metadata.setdefault("provider", runtime.get("provider"))
                 pane_metadata.setdefault("model", runtime.get("model") or self.model)
                 pane_metadata.setdefault("base_url", runtime.get("base_url"))
+
+        with self._analysis_lock:
+            self._analysis_active += 1
+            label = f"{command_name}: {title}"
+            self._analysis_activity_label = label
+            self._analysis_activity_command = command_name
+            self._analysis_activity_title = title
+            self._analysis_activity_subtitle = subtitle
+            self._analysis_activity_metadata = pane_metadata
+            self._analysis_activity_lines = ["Running analysis..."]
+            self._spinner_text = f"⚙ {label}"
+
         self._set_sync_pane_output(
             command_name,
             title=title,
@@ -3393,7 +3404,7 @@ class HermesCLI:
             body="Running analysis...",
             status="running",
             metadata=pane_metadata,
-            append=bool(getattr(self, "_app", None)),
+            append=False,
         )
         self._invalidate(min_interval=0.0)
 
@@ -3401,13 +3412,33 @@ class HermesCLI:
         cleaned = str(text or "").strip()
         if not cleaned:
             return
-        if len(cleaned) > 120:
-            cleaned = cleaned[:117] + "..."
+        if len(cleaned) > 200:
+            cleaned = cleaned[:197] + "..."
         with self._analysis_lock:
             if self._analysis_active <= 0:
                 return
             label = self._analysis_activity_label or "analysis"
             self._spinner_text = f"⚙ {label} · {cleaned}"
+            if self._analysis_activity_lines and self._analysis_activity_lines[-1] == cleaned:
+                lines = list(self._analysis_activity_lines)
+            else:
+                self._analysis_activity_lines.append(cleaned)
+                self._analysis_activity_lines = self._analysis_activity_lines[-200:]
+                lines = list(self._analysis_activity_lines)
+            command_name = self._analysis_activity_command
+            title = self._analysis_activity_title or command_name.title()
+            subtitle = self._analysis_activity_subtitle
+            metadata = dict(self._analysis_activity_metadata)
+        if command_name:
+            self._set_sync_pane_output(
+                command_name,
+                title=title,
+                subtitle=subtitle,
+                body="\n".join(lines),
+                status="running",
+                metadata=metadata,
+                append=False,
+            )
         self._invalidate(min_interval=0.0)
 
     def _end_analysis_activity(self) -> None:
@@ -3416,11 +3447,16 @@ class HermesCLI:
             if self._analysis_active > 0:
                 return
             self._analysis_activity_label = ""
+            self._analysis_activity_command = ""
+            self._analysis_activity_title = ""
+            self._analysis_activity_subtitle = ""
+            self._analysis_activity_metadata = {}
+            self._analysis_activity_lines = []
             if not self._agent_running and not self._command_running:
                 self._spinner_text = ""
         self._invalidate(min_interval=0.0)
 
-    def _make_analysis_callbacks(self) -> tuple[Callable[[str], None], Callable[..., None]]:
+    def _make_analysis_callbacks(self) -> tuple[Callable[[str], None], Callable[..., None], Callable[[int, list[str]], None]]:
         def _thinking_callback(text: str) -> None:
             first = str(text or "").strip().splitlines()
             if first:
@@ -3442,7 +3478,13 @@ class HermesCLI:
                 detail = f"{detail} · {pv}"
             self._update_analysis_activity(detail)
 
-        return _thinking_callback, _tool_progress_callback
+        def _step_callback(step_index: int, prev_tools: list[str]) -> None:
+            if prev_tools:
+                self._update_analysis_activity(f"step:{step_index} after {', '.join(prev_tools[:3])}")
+            else:
+                self._update_analysis_activity(f"step:{step_index}")
+
+        return _thinking_callback, _tool_progress_callback, _step_callback
 
     def _execute_review_prompt(
         self,
@@ -3460,7 +3502,7 @@ class HermesCLI:
             return
         try:
             from hermes_cli.codex_companion import analyze_prompt
-            thinking_callback, tool_progress_callback = self._make_analysis_callbacks()
+            thinking_callback, tool_progress_callback, step_callback = self._make_analysis_callbacks()
             result = analyze_prompt(
                 prompt,
                 model=self.model,
@@ -3468,6 +3510,7 @@ class HermesCLI:
                 runtime=runtime,
                 thinking_callback=thinking_callback,
                 tool_progress_callback=tool_progress_callback,
+                step_callback=step_callback,
             )
             body = result.get("analysis", "")
             promotion_candidates = self._extract_promotion_candidates(
@@ -3528,8 +3571,9 @@ class HermesCLI:
             from hermes_cli.codex_companion import analyze_change_set
             thinking_callback = None
             tool_progress_callback = None
+            step_callback = None
             if not auto_generated:
-                thinking_callback, tool_progress_callback = self._make_analysis_callbacks()
+                thinking_callback, tool_progress_callback, step_callback = self._make_analysis_callbacks()
             result = analyze_change_set(
                 event,
                 model=self.model,
@@ -3538,6 +3582,7 @@ class HermesCLI:
                 ignore_globs=self._get_review_exclude_globs(),
                 thinking_callback=thinking_callback,
                 tool_progress_callback=tool_progress_callback,
+                step_callback=step_callback,
             )
             self._review_latest_event = event
             self._review_latest_analysis = result

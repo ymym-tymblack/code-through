@@ -1296,7 +1296,7 @@ def _collect_workspace_file_paths(workspace_root: Path, *, max_files: int = 4000
     return rel_paths
 
 
-def _collect_readme_text(workspace_root: Path, *, max_files: int = 8, max_chars: int = 32_000) -> str:
+def _collect_readme_text(workspace_root: Path, *, max_files: int = 64, max_chars: int = 200_000) -> str:
     context_docs: list[tuple[int, str]] = []
     for rel_path in _collect_workspace_file_paths(workspace_root, max_files=400):
         p = Path(rel_path)
@@ -1846,18 +1846,6 @@ def _select_flow_targets(
         return refs
 
     if sync_kind == "startup":
-        project_context = collect_project_summary(workspace_root)
-        planned = plan_sync_targets(
-            workspace_root,
-            project_context=project_context,
-            changed_paths=[],
-            model=model,
-            runtime=runtime,
-            natural_language=natural_language,
-            sync_kind="startup",
-        )
-        planned_targets = list(planned.get("flow_targets") or [])
-
         guide_text = _collect_readme_text(workspace_root)
         all_candidates: list[str] = []
         for rel_path in _collect_workspace_file_paths(workspace_root, max_files=4000):
@@ -1918,22 +1906,6 @@ def _select_flow_targets(
 
         targets: list[dict[str, str]] = []
         seen_paths: set[str] = set()
-
-        for item in planned_targets:
-            rel_path = str(item.get("path") or "").strip()
-            symbol = str(item.get("symbol") or "").strip()
-            reason = str(item.get("reason") or "planned flow target")
-            if not rel_path or rel_path in seen_paths:
-                continue
-            if rel_path not in available_paths:
-                continue
-            target = _make_flow_target(workspace_root, rel_path, reason=reason, available_paths=available_paths)
-            if symbol:
-                target["symbol"] = symbol
-            seen_paths.add(target["path"])
-            targets.append(target)
-            if len(targets) >= limit:
-                return targets
 
         for rel_path in ranked_candidates:
             if rel_path in seen_paths:
@@ -2252,6 +2224,7 @@ def analyze_prompt(
     runtime: Optional[dict[str, Any]] = None,
     thinking_callback: Optional[Callable[[str], None]] = None,
     tool_progress_callback: Optional[Callable[..., None]] = None,
+    step_callback: Optional[Callable[[int, list[str]], None]] = None,
 ) -> dict:
     from run_agent import AIAgent
 
@@ -2274,6 +2247,7 @@ def analyze_prompt(
         skip_memory=True,
         thinking_callback=thinking_callback,
         tool_progress_callback=tool_progress_callback,
+        step_callback=step_callback,
     )
     result = agent.run_conversation(prompt)
     response_text = result.get("final_response") if isinstance(result, dict) else str(result)
@@ -2295,6 +2269,7 @@ def analyze_change_set(
     ignore_globs: Optional[Sequence[str]] = None,
     thinking_callback: Optional[Callable[[str], None]] = None,
     tool_progress_callback: Optional[Callable[..., None]] = None,
+    step_callback: Optional[Callable[[int, list[str]], None]] = None,
 ) -> dict:
     event = dict(event)
     root = Path(event["workspace_root"])
@@ -2317,6 +2292,7 @@ def analyze_change_set(
         runtime=runtime,
         thinking_callback=thinking_callback,
         tool_progress_callback=tool_progress_callback,
+        step_callback=step_callback,
     )
     promotion_candidates = extract_promotion_candidates(
         result.get("analysis", ""),
