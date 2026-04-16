@@ -10,6 +10,7 @@ from hermes_cli.codex_companion import (
     build_directory_explanation_prompt,
     build_file_explanation_prompt,
     collect_related_context,
+    collect_target_snapshot,
     collect_workspace_snapshot,
     detect_changes,
     extract_promotion_candidates,
@@ -41,6 +42,33 @@ def test_collect_workspace_snapshot_skips_review_exclude_globs(tmp_path):
     assert "src/main.py" in snapshot
     assert "memo/note.md" not in snapshot
     assert "memo/keep.py" not in snapshot
+
+
+def test_collect_target_snapshot_detects_file_changes(tmp_path):
+    target = tmp_path / "demo.py"
+    target.write_text("print(1)\n", encoding="utf-8")
+
+    before = collect_target_snapshot(tmp_path, target_path="demo.py", kind="file")
+    target.write_text("print(2)\n", encoding="utf-8")
+    after = collect_target_snapshot(tmp_path, target_path="demo.py", kind="file")
+
+    assert before.exists is True
+    assert after.exists is True
+    assert before != after
+
+
+def test_collect_target_snapshot_detects_directory_changes(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.py").write_text("print(1)\n", encoding="utf-8")
+
+    before = collect_target_snapshot(tmp_path, target_path="src", kind="directory")
+    (src / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    after = collect_target_snapshot(tmp_path, target_path="src", kind="directory")
+
+    assert before.exists is True
+    assert after.exists is True
+    assert before != after
 
 
 def test_detect_changes_handles_created_modified_deleted(tmp_path):

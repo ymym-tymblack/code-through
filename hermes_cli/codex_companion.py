@@ -170,6 +170,15 @@ class PendingChange:
         self.updated_at = updated_at
 
 
+@dataclass(frozen=True)
+class TargetSnapshot:
+    target_path: str
+    kind: str
+    exists: bool
+    digest: str
+    entries: tuple[str, ...] = ()
+
+
 def _text_lines(text: str) -> list[str]:
     return text.splitlines()
 
@@ -572,6 +581,65 @@ def collect_workspace_snapshot(
                 content=text,
             )
     return snapshots
+
+
+def collect_target_snapshot(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    kind: str,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> TargetSnapshot:
+    target = (workspace_root / target_path).resolve()
+    normalized_path = str(target_path)
+
+    if kind == "file":
+        if not target.exists() or not target.is_file():
+            return TargetSnapshot(
+                target_path=normalized_path,
+                kind="file",
+                exists=False,
+                digest="missing",
+            )
+        text = _load_text_file(target, max_file_bytes=max_file_bytes)
+        if text is None:
+            return TargetSnapshot(
+                target_path=normalized_path,
+                kind="file",
+                exists=True,
+                digest="unreadable",
+            )
+        digest = _sha256_text(text)
+        return TargetSnapshot(
+            target_path=normalized_path,
+            kind="file",
+            exists=True,
+            digest=digest,
+        )
+
+    if kind == "directory":
+        if not target.exists() or not target.is_dir():
+            return TargetSnapshot(
+                target_path=normalized_path,
+                kind="directory",
+                exists=False,
+                digest="missing",
+            )
+        snapshots = collect_workspace_snapshot(target, max_file_bytes=max_file_bytes)
+        entries = tuple(
+            f"{rel_path}:{snap.digest}:{snap.size}"
+            for rel_path, snap in sorted(snapshots.items())
+        )
+        digest = _sha256_text("\n".join(entries))
+        return TargetSnapshot(
+            target_path=normalized_path,
+            kind="directory",
+            exists=True,
+            digest=digest,
+            entries=entries,
+        )
+
+    raise ValueError(f"Unsupported target snapshot kind: {kind}")
 
 
 def build_diff_text(rel_path: str, old_content: str, new_content: str) -> str:
@@ -1461,6 +1529,7 @@ __all__ = [
     "collect_directory_context",
     "collect_workspace_snapshot",
     "collect_related_context",
+    "collect_target_snapshot",
     "detect_changes",
     "explain_file",
     "extract_promotion_candidates",

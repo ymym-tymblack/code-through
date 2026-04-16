@@ -118,6 +118,7 @@ class TestCLIQuickCommands:
         cli = HermesCLI.__new__(HermesCLI)
         cli.workspace_root = tmp_path
         cli._run_review_prompt = MagicMock()
+        cli._start_analysis_sync_watcher = MagicMock()
 
         cli._handle_explain_command("/explain sample.py")
 
@@ -125,6 +126,11 @@ class TestCLIQuickCommands:
         kwargs = cli._run_review_prompt.call_args.kwargs
         assert kwargs["title"] == "File Explain"
         assert kwargs["subtitle"] == "sample.py"
+        cli._start_analysis_sync_watcher.assert_called_once()
+        sync_kwargs = cli._start_analysis_sync_watcher.call_args.kwargs
+        assert sync_kwargs["command_name"] == "explain"
+        assert sync_kwargs["target_path"] == "sample.py"
+        assert sync_kwargs["kind"] == "file"
 
     def test_explain_command_handles_directory_path(self, tmp_path):
         from cli import HermesCLI
@@ -137,6 +143,7 @@ class TestCLIQuickCommands:
         cli = HermesCLI.__new__(HermesCLI)
         cli.workspace_root = tmp_path
         cli._run_review_prompt = MagicMock()
+        cli._start_analysis_sync_watcher = MagicMock()
 
         cli._handle_explain_command("/explain pkg")
 
@@ -144,6 +151,36 @@ class TestCLIQuickCommands:
         kwargs = cli._run_review_prompt.call_args.kwargs
         assert kwargs["title"] == "Directory Explain"
         assert kwargs["subtitle"] == "pkg"
+        cli._start_analysis_sync_watcher.assert_called_once()
+        sync_kwargs = cli._start_analysis_sync_watcher.call_args.kwargs
+        assert sync_kwargs["command_name"] == "explain"
+        assert sync_kwargs["target_path"] == "pkg"
+        assert sync_kwargs["kind"] == "directory"
+
+    def test_flow_command_starts_sync_watcher(self, tmp_path):
+        from cli import HermesCLI
+
+        target = tmp_path / "sample.py"
+        target.write_text("def run():\n    return 1\n", encoding="utf-8")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.workspace_root = tmp_path
+        cli._run_review_prompt = MagicMock()
+        cli._start_analysis_sync_watcher = MagicMock()
+
+        cli._handle_flow_command("/flow run sample.py")
+
+        cli._run_review_prompt.assert_called_once()
+        kwargs = cli._run_review_prompt.call_args.kwargs
+        assert kwargs["title"] == "Flow Explain"
+        assert kwargs["subtitle"] == "run @ sample.py"
+        cli._start_analysis_sync_watcher.assert_called_once()
+        sync_kwargs = cli._start_analysis_sync_watcher.call_args.kwargs
+        assert sync_kwargs["command_name"] == "flow"
+        assert sync_kwargs["target_path"] == "sample.py"
+        assert sync_kwargs["kind"] == "file"
+        assert sync_kwargs["symbol"] == "run"
+
 
     def test_promote_command_queues_followup_prompt(self):
         from cli import HermesCLI

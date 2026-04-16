@@ -1378,6 +1378,8 @@ class HermesCLI:
         self._review_enabled = bool(CLI_CONFIG.get("review", {}).get("enabled", True))
         self._review_latest_analysis: Optional[dict[str, Any]] = None
         self._review_latest_event: Optional[dict[str, Any]] = None
+        self._analysis_sync_watchers: Dict[str, dict[str, Any]] = {}
+        self._analysis_sync_lock = threading.Lock()
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -3116,6 +3118,66 @@ class HermesCLI:
         self._review_watcher = None
         self._review_thread = None
 
+    def _execute_review_prompt(
+        self,
+        prompt: str,
+        *,
+        title: str,
+        subtitle: str = "",
+        command_name: str = "review",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        try:
+            from hermes_cli.codex_companion import analyze_prompt
+
+            result = analyze_prompt(
+                prompt,
+                model=self.model,
+                session_id=f"review-{uuid.uuid4().hex}",
+                runtime={
+                    "api_key": self.api_key,
+                    "base_url": self.base_url,
+                    "provider": self.provider,
+                    "api_mode": self.api_mode,
+                },
+            )
+            body = result.get("analysis", "")
+            promotion_candidates = self._extract_promotion_candidates(
+                command_name=command_name,
+                body=body,
+                metadata=metadata,
+            )
+            self._store_command_output(
+                command_name=command_name,
+                title=title,
+                body=body,
+                subtitle=subtitle,
+                status="ok",
+                metadata={
+                    "provider": result.get("provider"),
+                    "model": result.get("model"),
+                    "promotion_candidates": promotion_candidates,
+                    **(metadata or {}),
+                },
+            )
+            self._render_review_panel(title, body, subtitle=subtitle)
+            self._show_promotion_hint(promotion_candidates)
+            return True
+        except Exception as exc:
+            self._store_command_output(
+                command_name=command_name,
+                title=title,
+                subtitle=subtitle,
+                status="error",
+                metadata={"error": str(exc), **(metadata or {})},
+            )
+            print()
+            _cprint(f"  ❌ {title} failed: {exc}")
+            return False
+        finally:
+            if self._app:
+                self._invalidate(min_interval=0)
+
     def _run_review_prompt(
         self,
         prompt: str,
@@ -3130,67 +3192,21 @@ class HermesCLI:
             return
 
         def _worker() -> None:
-            try:
-                from hermes_cli.codex_companion import analyze_prompt
-                result = analyze_prompt(
-                    prompt,
-                    model=self.model,
-                    session_id=f"review-{uuid.uuid4().hex}",
-                    runtime={
-                        "api_key": self.api_key,
-                        "base_url": self.base_url,
-                        "provider": self.provider,
-                        "api_mode": self.api_mode,
-                    },
-                )
-                body = result.get("analysis", "")
-                promotion_candidates = self._extract_promotion_candidates(
-                    command_name=command_name,
-                    body=body,
-                    metadata=metadata,
-                )
-                self._store_command_output(
-                    command_name=command_name,
-                    title=title,
-                    body=body,
-                    subtitle=subtitle,
-                    status="ok",
-                    metadata={
-                        "provider": result.get("provider"),
-                        "model": result.get("model"),
-                        "promotion_candidates": promotion_candidates,
-                        **(metadata or {}),
-                    },
-                )
-                self._render_review_panel(title, body, subtitle=subtitle)
-                self._show_promotion_hint(promotion_candidates)
-            except Exception as exc:
-                self._store_command_output(
-                    command_name=command_name,
-                    title=title,
-                    subtitle=subtitle,
-                    status="error",
-                    metadata={"error": str(exc), **(metadata or {})},
-                )
-                print()
-                _cprint(f"  ❌ {title} failed: {exc}")
-            finally:
-                if self._app:
-                    self._invalidate(min_interval=0)
+            self._execute_review_prompt(
+                prompt,
+                title=title,
+                subtitle=subtitle,
+                command_name=command_name,
+                metadata=metadata,
+            )
 
         threading.Thread(target=_worker, daemon=True, name=f"review-task-{uuid.uuid4().hex[:6]}").start()
 
-    def _handle_explain_command(self, cmd: str) -> None:
-        parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /explain <path>")
-            return
-        target_path = parts[1].strip()
+    def _build_explain_request(self, target_path: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         workspace_root = self.workspace_root
         target = (workspace_root / target_path).resolve()
         if not target.exists():
-            _cprint(f"  (>_<) Path not found: {target_path}")
-            return
+            return None, f"Path not found: {target_path}"
 
         from hermes_cli.codex_companion import (
             build_directory_explanation_prompt,
@@ -3198,6 +3214,7 @@ class HermesCLI:
             collect_directory_context,
             collect_related_context,
         )
+
         natural_language = getattr(self, "review_natural_language", "en")
 
         if target.is_dir():
@@ -3207,26 +3224,28 @@ class HermesCLI:
                 rel_path = target_path
             directory_context = collect_directory_context(workspace_root, target_path=rel_path)
             if not directory_context.get("entries"):
-                _cprint(f"  (>_<) No explainable files found in directory: {target_path}")
-                return
+                return None, f"No explainable files found in directory: {target_path}"
             prompt = build_directory_explanation_prompt(
                 workspace_root,
                 target_path=rel_path,
                 directory_context=directory_context,
                 natural_language=natural_language,
             )
-            self._run_review_prompt(
-                prompt,
-                title="Directory Explain",
-                subtitle=rel_path,
-                command_name="explain",
-                metadata={"target_path": rel_path, "kind": "directory"},
-            )
-            return
+            return {
+                "prompt": prompt,
+                "title": "Directory Explain",
+                "subtitle": rel_path,
+                "command_name": "explain",
+                "metadata": {
+                    "target_path": rel_path,
+                    "kind": "directory",
+                },
+                "watch_target_path": rel_path,
+                "watch_kind": "directory",
+            }, None
 
         if not target.is_file():
-            _cprint(f"  (>_<) File not found: {target_path}")
-            return
+            return None, f"File not found: {target_path}"
 
         try:
             rel_path = str(target.relative_to(workspace_root))
@@ -3239,35 +3258,38 @@ class HermesCLI:
             related_files=related,
             natural_language=natural_language,
         )
-        self._run_review_prompt(
-            prompt,
-            title="File Explain",
-            subtitle=rel_path,
-            command_name="explain",
-            metadata={"target_path": rel_path, "kind": "file", "related_files": related},
-        )
+        return {
+            "prompt": prompt,
+            "title": "File Explain",
+            "subtitle": rel_path,
+            "command_name": "explain",
+            "metadata": {
+                "target_path": rel_path,
+                "kind": "file",
+                "related_files": related,
+            },
+            "watch_target_path": rel_path,
+            "watch_kind": "file",
+        }, None
 
-    def _handle_flow_command(self, cmd: str) -> None:
-        parts = cmd.strip().split()
-        if len(parts) < 2:
-            _cprint("  Usage: /flow <symbol> [path]")
-            return
-        symbol = parts[1].strip()
-        explicit_path = parts[2].strip() if len(parts) > 2 else ""
+    def _build_flow_request(
+        self,
+        symbol: str,
+        explicit_path: str = "",
+    ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         workspace_root = self.workspace_root
         from hermes_cli.codex_companion import (
             build_file_explanation_prompt,
             collect_related_context,
             find_symbol_candidates,
         )
-        natural_language = getattr(self, "review_natural_language", "en")
 
+        natural_language = getattr(self, "review_natural_language", "en")
         target_path = explicit_path
         if not target_path:
             matches = find_symbol_candidates(workspace_root, symbol=symbol)
             if not matches:
-                _cprint(f"  (>_<) Could not find symbol: {symbol}")
-                return
+                return None, f"Could not find symbol: {symbol}"
             target_path = matches[0]
         related = collect_related_context(workspace_root, changed_paths=[target_path], max_related_files=4, max_total_chars=10_000)
         prompt = build_file_explanation_prompt(
@@ -3277,12 +3299,197 @@ class HermesCLI:
             related_files=related,
             natural_language=natural_language,
         )
+        return {
+            "prompt": prompt,
+            "title": "Flow Explain",
+            "subtitle": f"{symbol} @ {target_path}",
+            "command_name": "flow",
+            "metadata": {
+                "target_path": target_path,
+                "symbol": symbol,
+                "related_files": related,
+                "explicit_path": explicit_path,
+            },
+            "watch_target_path": target_path,
+            "watch_kind": "file",
+        }, None
+
+    def _ensure_analysis_sync_state(self) -> None:
+        if not hasattr(self, "_analysis_sync_watchers") or self._analysis_sync_watchers is None:
+            self._analysis_sync_watchers = {}
+        if not hasattr(self, "_analysis_sync_lock") or self._analysis_sync_lock is None:
+            self._analysis_sync_lock = threading.Lock()
+
+    @staticmethod
+    def _analysis_sync_key(command_name: str, *, target_path: str, symbol: str = "") -> str:
+        return "::".join([command_name, symbol.strip(), target_path])
+
+    def _stop_analysis_sync_watcher(self, key: str) -> None:
+        self._ensure_analysis_sync_state()
+        with self._analysis_sync_lock:
+            watcher = self._analysis_sync_watchers.pop(key, None)
+        if watcher is not None:
+            watcher["stop_event"].set()
+
+    def _stop_analysis_sync_watchers(self) -> None:
+        self._ensure_analysis_sync_state()
+        with self._analysis_sync_lock:
+            watchers = list(self._analysis_sync_watchers.values())
+            self._analysis_sync_watchers = {}
+        for watcher in watchers:
+            watcher["stop_event"].set()
+
+    def _start_analysis_sync_watcher(
+        self,
+        *,
+        command_name: str,
+        target_path: str,
+        kind: str,
+        symbol: str = "",
+        explicit_path: str = "",
+    ) -> None:
+        if not self._ensure_runtime_credentials():
+            return
+
+        from hermes_cli.codex_companion import collect_target_snapshot
+
+        review_cfg = CLI_CONFIG.get("review", {}) or {}
+        poll_interval = float(review_cfg.get("poll_interval", 1.0))
+        debounce_seconds = float(review_cfg.get("debounce_seconds", 2.0))
+        max_file_bytes = int(review_cfg.get("max_file_bytes", 200_000))
+        key = self._analysis_sync_key(command_name, target_path=explicit_path or target_path, symbol=symbol)
+        stop_event = threading.Event()
+
+        self._ensure_analysis_sync_state()
+        with self._analysis_sync_lock:
+            existing = self._analysis_sync_watchers.get(key)
+            if existing is not None:
+                existing["stop_event"].set()
+            self._analysis_sync_watchers[key] = {"stop_event": stop_event, "thread": None}
+
+        def _run() -> None:
+            watch_path = target_path
+            watch_kind = kind
+            previous = collect_target_snapshot(
+                self.workspace_root,
+                target_path=watch_path,
+                kind=watch_kind,
+                max_file_bytes=max_file_bytes,
+            )
+            pending = False
+            last_change_at = 0.0
+
+            while not stop_event.is_set():
+                current = collect_target_snapshot(
+                    self.workspace_root,
+                    target_path=watch_path,
+                    kind=watch_kind,
+                    max_file_bytes=max_file_bytes,
+                )
+                if current != previous:
+                    previous = current
+                    pending = True
+                    last_change_at = time.time()
+                if pending and (time.time() - last_change_at) >= debounce_seconds:
+                    pending = False
+                    if command_name == "flow":
+                        request, error = self._build_flow_request(symbol, explicit_path)
+                    else:
+                        request, error = self._build_explain_request(explicit_path or target_path)
+                    if error:
+                        print()
+                        _cprint(f"  ⚠️  {command_name} sync skipped: {error}")
+                        self._store_command_output(
+                            command_name=command_name,
+                            title="Flow Explain" if command_name == "flow" else ("Directory Explain" if watch_kind == "directory" else "File Explain"),
+                            subtitle=watch_path if command_name == "explain" else f"{symbol} @ {watch_path}",
+                            status="error",
+                            metadata={
+                                "error": error,
+                                "target_path": watch_path,
+                                "kind": watch_kind,
+                                **({"symbol": symbol} if symbol else {}),
+                            },
+                        )
+                    else:
+                        request["metadata"] = {
+                            **(request.get("metadata") or {}),
+                            "sync_source": "watcher",
+                        }
+                        print()
+                        _cprint(f"  ↻ Synced {request['title']}: {request['subtitle']}")
+                        self._execute_review_prompt(
+                            request["prompt"],
+                            title=request["title"],
+                            subtitle=request["subtitle"],
+                            command_name=request["command_name"],
+                            metadata=request["metadata"],
+                        )
+                        watch_path = request["watch_target_path"]
+                        watch_kind = request["watch_kind"]
+                        previous = collect_target_snapshot(
+                            self.workspace_root,
+                            target_path=watch_path,
+                            kind=watch_kind,
+                            max_file_bytes=max_file_bytes,
+                        )
+                stop_event.wait(poll_interval)
+
+        thread = threading.Thread(target=_run, daemon=True, name=f"analysis-sync-{command_name}-{uuid.uuid4().hex[:6]}")
+        with self._analysis_sync_lock:
+            watcher = self._analysis_sync_watchers.get(key)
+            if watcher is not None:
+                watcher["thread"] = thread
+        thread.start()
+
+    def _handle_explain_command(self, cmd: str) -> None:
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /explain <path>")
+            return
+        target_path = parts[1].strip()
+        request, error = self._build_explain_request(target_path)
+        if error:
+            _cprint(f"  (>_<) {error}")
+            return
         self._run_review_prompt(
-            prompt,
-            title="Flow Explain",
-            subtitle=f"{symbol} @ {target_path}",
+            request["prompt"],
+            title=request["title"],
+            subtitle=request["subtitle"],
+            command_name=request["command_name"],
+            metadata=request["metadata"],
+        )
+        self._start_analysis_sync_watcher(
+            command_name="explain",
+            target_path=request["watch_target_path"],
+            kind=request["watch_kind"],
+            explicit_path=target_path,
+        )
+
+    def _handle_flow_command(self, cmd: str) -> None:
+        parts = cmd.strip().split()
+        if len(parts) < 2:
+            _cprint("  Usage: /flow <symbol> [path]")
+            return
+        symbol = parts[1].strip()
+        explicit_path = parts[2].strip() if len(parts) > 2 else ""
+        request, error = self._build_flow_request(symbol, explicit_path)
+        if error:
+            _cprint(f"  (>_<) {error}")
+            return
+        self._run_review_prompt(
+            request["prompt"],
+            title=request["title"],
+            subtitle=request["subtitle"],
+            command_name=request["command_name"],
+            metadata=request["metadata"],
+        )
+        self._start_analysis_sync_watcher(
             command_name="flow",
-            metadata={"target_path": target_path, "symbol": symbol, "related_files": related},
+            target_path=request["watch_target_path"],
+            kind=request["watch_kind"],
+            symbol=symbol,
+            explicit_path=explicit_path,
         )
 
     def _run_git_command(self, *args: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess[str]:
@@ -6543,6 +6750,7 @@ class HermesCLI:
         finally:
             self._should_exit = True
             self._stop_review_watcher()
+            self._stop_analysis_sync_watchers()
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:
