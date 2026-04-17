@@ -1292,6 +1292,7 @@ def analyze_prompt(
     model: Optional[str] = None,
     session_id: Optional[str] = None,
     runtime: Optional[dict[str, Any]] = None,
+    enabled_toolsets: Optional[list[str]] = None,
 ) -> dict:
     from run_agent import AIAgent
 
@@ -1302,7 +1303,7 @@ def analyze_prompt(
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=model or _default_analysis_model(),
-        enabled_toolsets=["file", "session_search"],
+        enabled_toolsets=["file", "session_search"] if enabled_toolsets is None else enabled_toolsets,
         quiet_mode=True,
         platform="cli",
         session_id=session_id or f"store-{uuid.uuid4().hex}",

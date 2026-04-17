@@ -3126,6 +3126,7 @@ class HermesCLI:
         subtitle: str = "",
         command_name: str = "review",
         metadata: Optional[dict[str, Any]] = None,
+        enabled_toolsets: Optional[list[str]] = None,
     ) -> bool:
         try:
             from hermes_cli.codex_companion import analyze_prompt
@@ -3140,6 +3141,7 @@ class HermesCLI:
                     "provider": self.provider,
                     "api_mode": self.api_mode,
                 },
+                enabled_toolsets=enabled_toolsets,
             )
             body = result.get("analysis", "")
             promotion_candidates = self._extract_promotion_candidates(
@@ -3186,6 +3188,7 @@ class HermesCLI:
         subtitle: str = "",
         command_name: str = "review",
         metadata: Optional[dict[str, Any]] = None,
+        enabled_toolsets: Optional[list[str]] = None,
     ) -> None:
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot run review analysis: no valid credentials.")
@@ -3198,6 +3201,7 @@ class HermesCLI:
                 subtitle=subtitle,
                 command_name=command_name,
                 metadata=metadata,
+                enabled_toolsets=enabled_toolsets,
             )
 
         threading.Thread(target=_worker, daemon=True, name=f"review-task-{uuid.uuid4().hex[:6]}").start()
@@ -3423,6 +3427,7 @@ class HermesCLI:
             },
             "watch_target_path": watch_path,
             "watch_kind": kind,
+            "enabled_toolsets": ["__no_tools__"],
         }, None
 
 
@@ -3545,6 +3550,7 @@ class HermesCLI:
                             subtitle=request["subtitle"],
                             command_name=request["command_name"],
                             metadata=request["metadata"],
+                            enabled_toolsets=request.get("enabled_toolsets"),
                         )
                         watch_path = request["watch_target_path"]
                         watch_kind = request["watch_kind"]
