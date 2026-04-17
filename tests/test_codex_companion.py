@@ -307,18 +307,12 @@ def test_build_directory_explanation_prompt_supports_japanese(tmp_path):
     assert "## Overview" not in prompt
 
 
-def test_extract_promotion_candidates_prefers_skill_for_test_workflows():
-    analysis = """## Change Summary
-Updated the retry path.
-
-## Control Flow
-The retry path now preserves the previous user message.
-
-## Risks
-- Watch for duplicate retries if the queue is already populated.
+def test_extract_promotion_candidates_is_disabled():
+    analysis = """## Risks
+- Watch for duplicate retries.
 
 ## Improvement Suggestions
-- Add a regression test covering queued retry behavior after a slash command.
+- Add a regression test covering queued retry behavior.
 """
 
     candidates = extract_promotion_candidates(
@@ -327,10 +321,7 @@ The retry path now preserves the previous user message.
         metadata={"target_path": "cli.py"},
     )
 
-    assert len(candidates) >= 2
-    assert candidates[0]["source_paths"] == ["cli.py"]
-    assert any(candidate["suggested_target"] == "skill" for candidate in candidates)
-    assert any("regression test" in candidate["summary"].lower() for candidate in candidates)
+    assert candidates == []
 
 
 def test_companion_store_loads_latest_saved_artifacts(tmp_path):
@@ -352,7 +343,7 @@ def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsy
 
     with patch(
         "hermes_cli.codex_companion.analyze_change_set",
-        return_value={"analysis": "full review body", "promotion_candidates": [{"summary": "save me"}]},
+        return_value={"analysis": "full review body"},
     ):
         watcher._process_event(event)
 
@@ -360,7 +351,7 @@ def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsy
     assert "[store] output saved:" in output
     assert "full review body" not in output
     payload = watcher.store.load_latest_output(command="review", title="Diff Review")
-    assert payload["metadata"]["promotion_candidates"] == [{"summary": "save me"}]
+    assert "promotion_candidates" not in payload["metadata"]
 
 
 def test_store_command_output_writes_readable_multiline_json(tmp_path):

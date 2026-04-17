@@ -2893,20 +2893,7 @@ class HermesCLI:
         body: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> list[dict[str, Any]]:
-        review_mode = str(getattr(self, "review_promotion_mode", "semi_auto") or "semi_auto").lower()
-        if review_mode == "off":
-            return []
-        try:
-            from hermes_cli.codex_companion import extract_promotion_candidates
-
-            return extract_promotion_candidates(
-                body,
-                command_name=command_name,
-                metadata=metadata,
-                natural_language=getattr(self, "review_natural_language", "en"),
-            )
-        except Exception:
-            return []
+        return []
 
     def _show_promotion_hint(self, candidates: list[dict[str, Any]]) -> None:
         if not candidates:
@@ -3067,7 +3054,6 @@ class HermesCLI:
                 if len((self._review_latest_event or {}).get("changes", [])) > 3:
                     changed += ", ..."
                 self._render_review_panel("Diff Review", payload.get("analysis", ""), subtitle=changed)
-                self._show_promotion_hint(payload.get("promotion_candidates", []) or [])
             else:
                 _cprint(f"  ⚠️  Diff review failed: {payload.get('error', 'unknown error')}")
             if self._app:
@@ -3144,11 +3130,6 @@ class HermesCLI:
                 enabled_toolsets=enabled_toolsets,
             )
             body = result.get("analysis", "")
-            promotion_candidates = self._extract_promotion_candidates(
-                command_name=command_name,
-                body=body,
-                metadata=metadata,
-            )
             self._store_command_output(
                 command_name=command_name,
                 title=title,
@@ -3158,12 +3139,10 @@ class HermesCLI:
                 metadata={
                     "provider": result.get("provider"),
                     "model": result.get("model"),
-                    "promotion_candidates": promotion_candidates,
                     **(metadata or {}),
                 },
             )
             self._render_review_panel(title, body, subtitle=subtitle)
-            self._show_promotion_hint(promotion_candidates)
             return True
         except Exception as exc:
             self._store_command_output(
@@ -3821,7 +3800,6 @@ class HermesCLI:
                 return
             if analysis.get("analysis"):
                 self._render_review_panel("Diff Review", analysis.get("analysis", ""))
-                self._show_promotion_hint(analysis.get("promotion_candidates", []) or [])
             else:
                 _cprint(f"  Last diff review failed: {analysis.get('error', 'unknown error')}")
             return
