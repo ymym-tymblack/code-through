@@ -9,7 +9,9 @@ from hermes_cli.codex_companion import (
     build_diff_text,
     build_directory_explanation_prompt,
     build_file_explanation_prompt,
+    build_incremental_explanation_prompt,
     collect_related_context,
+    collect_target_file_snapshots,
     collect_target_snapshot,
     collect_workspace_snapshot,
     detect_changes,
@@ -17,6 +19,45 @@ from hermes_cli.codex_companion import (
     run_codex_watch,
 )
 
+
+
+
+def test_collect_target_file_snapshots_uses_workspace_relative_paths(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("print('a')\n", encoding="utf-8")
+    (tmp_path / "pkg" / "b.py").write_text("print('b')\n", encoding="utf-8")
+
+    snapshots = collect_target_file_snapshots(tmp_path, target_path="pkg", kind="directory")
+
+    assert sorted(snapshots) == ["pkg/a.py", "pkg/b.py"]
+    assert snapshots["pkg/a.py"].content == "print('a')\n"
+
+
+def test_build_incremental_explanation_prompt_uses_previous_output_and_diff_only(tmp_path):
+    prompt = build_incremental_explanation_prompt(
+        tmp_path,
+        command_name="explain",
+        title="File Explain",
+        subtitle="app.py",
+        target_path="app.py",
+        kind="file",
+        previous_output={"content": {"text": "## Overview\nOld explanation"}},
+        changes=[
+            {
+                "path": "app.py",
+                "change_type": "modified",
+                "diff_text": "@@ -1 +1 @@\n-old\n+new\n",
+            }
+        ],
+        natural_language="en",
+    )
+
+    assert "incrementally updating" in prompt
+    assert "Previous explanation to update:" in prompt
+    assert "Old explanation" in prompt
+    assert "@@ -1 +1 @@" in prompt
+    assert "Do not re-read or re-explain unchanged code" in prompt
+    assert "## Overview" in prompt
 
 def test_collect_workspace_snapshot_skips_ignored_dirs(tmp_path):
     (tmp_path / ".git").mkdir()

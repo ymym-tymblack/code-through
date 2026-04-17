@@ -3339,6 +3339,93 @@ class HermesCLI:
         for watcher in watchers:
             watcher["stop_event"].set()
 
+    def _build_analysis_sync_delta_request(
+        self,
+        *,
+        command_name: str,
+        target_path: str,
+        kind: str,
+        changes: dict[str, Any],
+        symbol: str = "",
+        explicit_path: str = "",
+    ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        if not changes:
+            return None, "No readable diff was available for the changed target."
+
+        from hermes_cli.codex_companion import (
+            HermesStore,
+            build_diff_text,
+            build_incremental_explanation_prompt,
+            collect_related_context,
+        )
+
+        watch_path = explicit_path or target_path
+        if command_name == "flow":
+            title = "Flow Explain"
+            subtitle = f"{symbol} @ {watch_path}"
+        else:
+            title = "Directory Explain" if kind == "directory" else "File Explain"
+            subtitle = watch_path
+
+        changed_items: list[dict[str, Any]] = []
+        for change in sorted(changes.values(), key=lambda item: item.path):
+            diff_text = build_diff_text(change.path, change.old_content, change.new_content)
+            if len(diff_text) > 12_000:
+                diff_text = diff_text[:12_000] + "\n...[diff truncated]\n"
+            changed_items.append(
+                {
+                    "path": change.path,
+                    "change_type": change.change_type,
+                    "diff_text": diff_text,
+                }
+            )
+
+        changed_paths = [item["path"] for item in changed_items]
+        related = collect_related_context(
+            self.workspace_root,
+            changed_paths=changed_paths,
+            max_related_files=4,
+            max_total_chars=8_000,
+        )
+        previous_output = HermesStore().load_latest_output(command=command_name, title=title)
+        if previous_output and previous_output.get("subtitle") != subtitle:
+            previous_output = None
+
+        natural_language = getattr(self, "review_natural_language", "en")
+        prompt = build_incremental_explanation_prompt(
+            self.workspace_root,
+            command_name=command_name,
+            title=title,
+            subtitle=subtitle,
+            target_path=watch_path,
+            kind=kind,
+            symbol=symbol,
+            changes=changed_items,
+            previous_output=previous_output,
+            related_files=related,
+            natural_language=natural_language,
+        )
+        return {
+            "prompt": prompt,
+            "title": title,
+            "subtitle": subtitle,
+            "command_name": command_name,
+            "metadata": {
+                "target_path": watch_path,
+                "kind": kind,
+                "symbol": symbol,
+                "explicit_path": explicit_path,
+                "related_files": related,
+                "sync_source": "watcher",
+                "sync_mode": "incremental_diff",
+                "changed_paths": changed_paths,
+                "change_count": len(changed_items),
+            },
+            "watch_target_path": watch_path,
+            "watch_kind": kind,
+        }, None
+
+
     def _start_analysis_sync_watcher(
         self,
         *,
@@ -3351,7 +3438,11 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return
 
-        from hermes_cli.codex_companion import collect_target_snapshot
+        from hermes_cli.codex_companion import (
+            collect_target_file_snapshots,
+            collect_target_snapshot,
+            detect_changes,
+        )
 
         review_cfg = CLI_CONFIG.get("review", {}) or {}
         poll_interval = float(review_cfg.get("poll_interval", 1.0))
@@ -3376,7 +3467,14 @@ class HermesCLI:
                 kind=watch_kind,
                 max_file_bytes=max_file_bytes,
             )
+            previous_files = collect_target_file_snapshots(
+                self.workspace_root,
+                target_path=watch_path,
+                kind=watch_kind,
+                max_file_bytes=max_file_bytes,
+            )
             pending = False
+            pending_changes: dict[str, Any] = {}
             last_change_at = 0.0
 
             while not stop_event.is_set():
@@ -3386,16 +3484,39 @@ class HermesCLI:
                     kind=watch_kind,
                     max_file_bytes=max_file_bytes,
                 )
+                current_files = collect_target_file_snapshots(
+                    self.workspace_root,
+                    target_path=watch_path,
+                    kind=watch_kind,
+                    max_file_bytes=max_file_bytes,
+                )
                 if current != previous:
+                    changes = detect_changes(previous_files, current_files)
                     previous = current
+                    previous_files = current_files
+                    for change_path, change in changes.items():
+                        existing_change = pending_changes.get(change_path)
+                        if existing_change is None:
+                            pending_changes[change_path] = change
+                        else:
+                            existing_change.refresh(
+                                change_type=change.change_type,
+                                new_content=change.new_content,
+                                updated_at=change.updated_at,
+                            )
                     pending = True
                     last_change_at = time.time()
                 if pending and (time.time() - last_change_at) >= debounce_seconds:
                     pending = False
-                    if command_name == "flow":
-                        request, error = self._build_flow_request(symbol, explicit_path)
-                    else:
-                        request, error = self._build_explain_request(explicit_path or target_path)
+                    request, error = self._build_analysis_sync_delta_request(
+                        command_name=command_name,
+                        target_path=watch_path,
+                        kind=watch_kind,
+                        symbol=symbol,
+                        explicit_path=explicit_path,
+                        changes=pending_changes,
+                    )
+                    pending_changes = {}
                     if error:
                         print()
                         _cprint(f"  ⚠️  {command_name} sync skipped: {error}")
@@ -3428,6 +3549,12 @@ class HermesCLI:
                         watch_path = request["watch_target_path"]
                         watch_kind = request["watch_kind"]
                         previous = collect_target_snapshot(
+                            self.workspace_root,
+                            target_path=watch_path,
+                            kind=watch_kind,
+                            max_file_bytes=max_file_bytes,
+                        )
+                        previous_files = collect_target_file_snapshots(
                             self.workspace_root,
                             target_path=watch_path,
                             kind=watch_kind,

@@ -583,6 +583,64 @@ def collect_workspace_snapshot(
     return snapshots
 
 
+def collect_target_file_snapshots(
+    workspace_root: Path,
+    *,
+    target_path: str,
+    kind: str,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> Dict[str, FileSnapshot]:
+    """Collect readable file snapshots under a watched explain/flow target.
+
+    Unlike collect_workspace_snapshot(target_dir), returned keys are always
+    workspace-relative paths so diffs and metadata stay stable when watching a
+    subdirectory.
+    """
+    target = (workspace_root / target_path).resolve()
+    snapshots: Dict[str, FileSnapshot] = {}
+
+    if kind == "file":
+        if not target.exists() or not target.is_file():
+            return snapshots
+        text = _load_text_file(target, max_file_bytes=max_file_bytes)
+        if text is None:
+            return snapshots
+        stat = target.stat()
+        try:
+            rel_path = str(target.relative_to(workspace_root))
+        except ValueError:
+            rel_path = str(target_path)
+        snapshots[rel_path] = FileSnapshot(
+            rel_path=rel_path,
+            mtime_ns=stat.st_mtime_ns,
+            size=stat.st_size,
+            digest=_sha256_text(text),
+            content=text,
+        )
+        return snapshots
+
+    if kind == "directory":
+        if not target.exists() or not target.is_dir():
+            return snapshots
+        nested = collect_workspace_snapshot(target, max_file_bytes=max_file_bytes)
+        for rel_path, snap in nested.items():
+            full_path = target / rel_path
+            try:
+                workspace_rel = str(full_path.relative_to(workspace_root))
+            except ValueError:
+                workspace_rel = str(Path(target_path) / rel_path)
+            snapshots[workspace_rel] = FileSnapshot(
+                rel_path=workspace_rel,
+                mtime_ns=snap.mtime_ns,
+                size=snap.size,
+                digest=snap.digest,
+                content=snap.content,
+            )
+        return snapshots
+
+    raise ValueError(f"Unsupported target snapshot kind: {kind}")
+
+
 def collect_target_snapshot(
     workspace_root: Path,
     *,
@@ -1080,6 +1138,66 @@ def build_directory_explanation_prompt(
         content = item.get("content") or ""
         if content:
             lines.append(content)
+    return "\n".join(lines)
+
+
+def build_incremental_explanation_prompt(
+    workspace_root: Path,
+    *,
+    command_name: str,
+    title: str,
+    subtitle: str,
+    target_path: str,
+    kind: str,
+    changes: Sequence[dict[str, Any]],
+    previous_output: Optional[dict[str, Any]] = None,
+    symbol: str = "",
+    related_files: Optional[Sequence[dict[str, str]]] = None,
+    natural_language: Optional[str] = None,
+) -> str:
+    spec = _language_spec(natural_language)
+    previous_text = ""
+    if previous_output:
+        previous_text = str(previous_output.get("content", {}).get("text") or "").strip()
+    previous_text = _truncate_text(previous_text, 10_000) if previous_text else "(no previous explanation available)"
+
+    lines = [
+        f"You are incrementally updating a prior {command_name} explanation in {spec['name']}.",
+        "Use only the previous explanation and the changed hunks below unless a listed related excerpt is essential.",
+        "Do not re-read or re-explain unchanged code. Update conclusions only where the diff changes behavior, responsibility, control flow, risk, or improvement suggestions.",
+        "Return a complete updated explanation, not a patch note, using the same section structure as the prior explanation.",
+        "If the diff does not affect a section, keep that section concise and preserve the prior conclusion.",
+        "",
+        f"Return exactly these sections in {spec['name']}:",
+        *(spec["directory_sections"] if kind == "directory" else spec["file_sections"]),
+        "",
+        f"Workspace: {workspace_root}",
+        f"Command: {command_name}",
+        f"Title: {title}",
+        f"Subtitle: {subtitle}",
+        f"Target {kind}: {target_path}",
+    ]
+    if symbol:
+        lines.append(f"Focus symbol: {symbol}")
+
+    lines.extend([
+        "",
+        "Previous explanation to update:",
+        previous_text,
+        "",
+        f"Changed files ({len(changes)}):",
+    ])
+    for change in changes:
+        lines.extend([
+            "",
+            f"### {change.get('change_type', 'modified')}: {change.get('path', '')}",
+            str(change.get("diff_text") or "[no diff text]"),
+        ])
+
+    if related_files:
+        lines.extend(["", "Related files (truncated excerpts; use only if needed):"])
+        for item in related_files:
+            lines.extend(["", f"### related: {item['path']}", item["content"]])
     return "\n".join(lines)
 
 
