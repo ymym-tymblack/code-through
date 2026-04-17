@@ -569,6 +569,188 @@ wheels = [
 ]
 
 [[package]]
+name = "code-through"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "edge-tts" },
+    { name = "fal-client" },
+    { name = "faster-whisper" },
+    { name = "fire" },
+    { name = "firecrawl-py" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "litellm" },
+    { name = "openai" },
+    { name = "platformdirs" },
+    { name = "prompt-toolkit" },
+    { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "tenacity" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
+all = [
+    { name = "agent-client-protocol" },
+    { name = "aiohttp" },
+    { name = "croniter" },
+    { name = "daytona" },
+    { name = "discord-py", extra = ["voice"] },
+    { name = "elevenlabs" },
+    { name = "honcho-ai" },
+    { name = "mcp" },
+    { name = "numpy" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-xdist" },
+    { name = "python-telegram-bot" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
+    { name = "simple-term-menu" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+    { name = "sounddevice" },
+    { name = "swe-rex", extra = ["modal"] },
+]
+cli = [
+    { name = "simple-term-menu" },
+]
+cron = [
+    { name = "croniter" },
+]
+daytona = [
+    { name = "daytona" },
+]
+dev = [
+    { name = "mcp" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-xdist" },
+]
+homeassistant = [
+    { name = "aiohttp" },
+]
+honcho = [
+    { name = "honcho-ai" },
+]
+mcp = [
+    { name = "mcp" },
+]
+messaging = [
+    { name = "aiohttp" },
+    { name = "discord-py", extra = ["voice"] },
+    { name = "python-telegram-bot" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+]
+modal = [
+    { name = "swe-rex", extra = ["modal"] },
+]
+pty = [
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
+]
+rl = [
+    { name = "atroposlib" },
+    { name = "fastapi" },
+    { name = "tinker" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "wandb" },
+]
+slack = [
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+]
+tts-premium = [
+    { name = "elevenlabs" },
+]
+voice = [
+    { name = "numpy" },
+    { name = "sounddevice" },
+]
+yc-bench = [
+    { name = "yc-bench" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.8.1,<1.0" },
+    { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = ">=3.9.0" },
+    { name = "aiohttp", marker = "extra == 'messaging'", specifier = ">=3.9.0" },
+    { name = "anthropic", specifier = ">=0.39.0" },
+    { name = "atroposlib", marker = "extra == 'rl'", git = "https://github.com/NousResearch/atropos.git" },
+    { name = "code-through", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["cli"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["cron"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["daytona"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["dev"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["homeassistant"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["honcho"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["messaging"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["modal"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["pty"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["slack"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["tts-premium"], marker = "extra == 'all'" },
+    { name = "code-through", extras = ["voice"], marker = "extra == 'all'" },
+    { name = "croniter", marker = "extra == 'cron'" },
+    { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.148.0" },
+    { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = ">=2.0" },
+    { name = "edge-tts" },
+    { name = "elevenlabs", marker = "extra == 'tts-premium'" },
+    { name = "fal-client" },
+    { name = "fastapi", marker = "extra == 'rl'", specifier = ">=0.104.0" },
+    { name = "faster-whisper", specifier = ">=1.0.0" },
+    { name = "fire" },
+    { name = "firecrawl-py" },
+    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = ">=2.0.1" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "litellm", specifier = ">=1.75.5" },
+    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.2.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
+    { name = "numpy", marker = "extra == 'voice'", specifier = ">=1.24.0" },
+    { name = "openai" },
+    { name = "platformdirs" },
+    { name = "prompt-toolkit" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'pty'", specifier = ">=0.7.0" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyjwt", extras = ["crypto"] },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'" },
+    { name = "pytest-xdist", marker = "extra == 'dev'" },
+    { name = "python-dotenv" },
+    { name = "python-telegram-bot", marker = "extra == 'messaging'", specifier = ">=20.0" },
+    { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'pty'", specifier = ">=2.0.0" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "simple-term-menu", marker = "extra == 'cli'" },
+    { name = "slack-bolt", marker = "extra == 'messaging'", specifier = ">=1.18.0" },
+    { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.18.0" },
+    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = ">=3.27.0" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.27.0" },
+    { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.4.6" },
+    { name = "swe-rex", extras = ["modal"], marker = "extra == 'modal'", specifier = ">=1.4.0" },
+    { name = "tenacity" },
+    { name = "tinker", marker = "extra == 'rl'", git = "https://github.com/thinking-machines-lab/tinker.git" },
+    { name = "typer" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'rl'", specifier = ">=0.24.0" },
+    { name = "wandb", marker = "extra == 'rl'", specifier = ">=0.15.0" },
+    { name = "yc-bench", marker = "extra == 'yc-bench'", git = "https://github.com/collinear-ai/yc-bench.git" },
+]
+provides-extras = ["modal", "daytona", "dev", "messaging", "cron", "slack", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "acp", "rl", "yc-bench", "all"]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1390,188 +1572,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/1d/17/afa56379f94ad0fe8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/b2/119f6e6dcbd96f9069ce9a2665e0146588dc9f88f29549711853645e736a/h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd", size = 61779, upload-time = "2025-08-23T18:12:17.779Z" },
 ]
-
-[[package]]
-name = "hermes-agent"
-version = "0.2.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "edge-tts" },
-    { name = "fal-client" },
-    { name = "faster-whisper" },
-    { name = "fire" },
-    { name = "firecrawl-py" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "litellm" },
-    { name = "openai" },
-    { name = "platformdirs" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic" },
-    { name = "pyjwt", extra = ["crypto"] },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "tenacity" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-acp = [
-    { name = "agent-client-protocol" },
-]
-all = [
-    { name = "agent-client-protocol" },
-    { name = "aiohttp" },
-    { name = "croniter" },
-    { name = "daytona" },
-    { name = "discord-py", extra = ["voice"] },
-    { name = "elevenlabs" },
-    { name = "honcho-ai" },
-    { name = "mcp" },
-    { name = "numpy" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-xdist" },
-    { name = "python-telegram-bot" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
-    { name = "simple-term-menu" },
-    { name = "slack-bolt" },
-    { name = "slack-sdk" },
-    { name = "sounddevice" },
-    { name = "swe-rex", extra = ["modal"] },
-]
-cli = [
-    { name = "simple-term-menu" },
-]
-cron = [
-    { name = "croniter" },
-]
-daytona = [
-    { name = "daytona" },
-]
-dev = [
-    { name = "mcp" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-xdist" },
-]
-homeassistant = [
-    { name = "aiohttp" },
-]
-honcho = [
-    { name = "honcho-ai" },
-]
-mcp = [
-    { name = "mcp" },
-]
-messaging = [
-    { name = "aiohttp" },
-    { name = "discord-py", extra = ["voice"] },
-    { name = "python-telegram-bot" },
-    { name = "slack-bolt" },
-    { name = "slack-sdk" },
-]
-modal = [
-    { name = "swe-rex", extra = ["modal"] },
-]
-pty = [
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
-]
-rl = [
-    { name = "atroposlib" },
-    { name = "fastapi" },
-    { name = "tinker" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "wandb" },
-]
-slack = [
-    { name = "slack-bolt" },
-    { name = "slack-sdk" },
-]
-tts-premium = [
-    { name = "elevenlabs" },
-]
-voice = [
-    { name = "numpy" },
-    { name = "sounddevice" },
-]
-yc-bench = [
-    { name = "yc-bench" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.8.1,<1.0" },
-    { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = ">=3.9.0" },
-    { name = "aiohttp", marker = "extra == 'messaging'", specifier = ">=3.9.0" },
-    { name = "anthropic", specifier = ">=0.39.0" },
-    { name = "atroposlib", marker = "extra == 'rl'", git = "https://github.com/NousResearch/atropos.git" },
-    { name = "croniter", marker = "extra == 'cron'" },
-    { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.148.0" },
-    { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = ">=2.0" },
-    { name = "edge-tts" },
-    { name = "elevenlabs", marker = "extra == 'tts-premium'" },
-    { name = "fal-client" },
-    { name = "fastapi", marker = "extra == 'rl'", specifier = ">=0.104.0" },
-    { name = "faster-whisper", specifier = ">=1.0.0" },
-    { name = "fire" },
-    { name = "firecrawl-py" },
-    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["daytona"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["dev"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["messaging"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["modal"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["slack"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["tts-premium"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["voice"], marker = "extra == 'all'" },
-    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = ">=2.0.1" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "litellm", specifier = ">=1.75.5" },
-    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.2.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
-    { name = "numpy", marker = "extra == 'voice'", specifier = ">=1.24.0" },
-    { name = "openai" },
-    { name = "platformdirs" },
-    { name = "prompt-toolkit" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'pty'", specifier = ">=0.7.0" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyjwt", extras = ["crypto"] },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "pytest-xdist", marker = "extra == 'dev'" },
-    { name = "python-dotenv" },
-    { name = "python-telegram-bot", marker = "extra == 'messaging'", specifier = ">=20.0" },
-    { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'pty'", specifier = ">=2.0.0" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "simple-term-menu", marker = "extra == 'cli'" },
-    { name = "slack-bolt", marker = "extra == 'messaging'", specifier = ">=1.18.0" },
-    { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.18.0" },
-    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = ">=3.27.0" },
-    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.27.0" },
-    { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.4.6" },
-    { name = "swe-rex", extras = ["modal"], marker = "extra == 'modal'", specifier = ">=1.4.0" },
-    { name = "tenacity" },
-    { name = "tinker", marker = "extra == 'rl'", git = "https://github.com/thinking-machines-lab/tinker.git" },
-    { name = "typer" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'rl'", specifier = ">=0.24.0" },
-    { name = "wandb", marker = "extra == 'rl'", specifier = ">=0.15.0" },
-    { name = "yc-bench", marker = "extra == 'yc-bench'", git = "https://github.com/collinear-ai/yc-bench.git" },
-]
-provides-extras = ["modal", "daytona", "dev", "messaging", "cron", "slack", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "acp", "rl", "yc-bench", "all"]
 
 [[package]]
 name = "hf-transfer"

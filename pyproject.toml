@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-agent"
+name = "code-through"
 version = "0.2.0"
-description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
+description = "Code-Through - an AI coding agent for explain, flow, review, and workspace-aware coding"
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "Nous Research" }]
+authors = [{ name = "toyama-black" }]
 license = { text = "MIT" }
 dependencies = [
   # Core
@@ -66,26 +66,26 @@ rl = [
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [
-  "hermes-agent[modal]",
-  "hermes-agent[daytona]",
-  "hermes-agent[messaging]",
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[dev]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[slack]",
-  "hermes-agent[pty]",
-  "hermes-agent[honcho]",
-  "hermes-agent[mcp]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[acp]",
-  "hermes-agent[voice]",
+  "code-through[modal]",
+  "code-through[daytona]",
+  "code-through[messaging]",
+  "code-through[cron]",
+  "code-through[cli]",
+  "code-through[dev]",
+  "code-through[tts-premium]",
+  "code-through[slack]",
+  "code-through[pty]",
+  "code-through[honcho]",
+  "code-through[mcp]",
+  "code-through[homeassistant]",
+  "code-through[acp]",
+  "code-through[voice]",
 ]
 
 [project.scripts]
-hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
-hermes-acp = "acp_adapter.entry:main"
+codet = "hermes_cli.main:main"
+codet-agent = "run_agent:main"
+codet-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "mini_swe_runner", "minisweagent_path", "rl_cli", "utils"]

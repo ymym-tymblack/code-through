@@ -1,6 +1,6 @@
 # Project Description
 
-hermes-agent ex is an extension of hermes-agent.
+Code-Through is an AI coding agent focused on explain, flow, review, and workspace-aware command-line workflows.
 
 Added features:
 /flow: By specifying functions or classes contained in a designated file, it explains the flow of their processing.
@@ -14,9 +14,9 @@ Everything can be explained using natural language.
 # Setup
 
 ```bash
-git clone https://github.com/ymym-tymblack/hermes-agent-ex.git
-cd hermes-agent-ex
+git clone https://github.com/ymym-tymblack/code-through.git
+cd code-through
 uv sync
-uv run hermes setup
-uv run hermes --workspace /path/to/workspace
+uv run codet setup
+uv run codet --workspace /path/to/workspace
 ```

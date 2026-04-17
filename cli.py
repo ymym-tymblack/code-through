@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hermes Agent CLI - Interactive Terminal Interface
+Code-Through CLI - Interactive Terminal Interface
 
-A beautiful command-line interface for the Hermes Agent, inspired by Claude Code.
+A beautiful command-line interface for the Code-Through, inspired by Claude Code.
 Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
 
 Usage:
@@ -800,7 +800,7 @@ HERMES_AGENT_LOGO = """[bold #CD7F32]██╗  ██╗███████�
 [#B8860B]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║      ██╔══╝   ██╔██╗ [/]
 [#FFD700]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║      ███████╗██╔╝ ██╗[/]
 [#FFD700]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝      ╚══════╝╚═╝  ╚═╝[/]
-[dim #FFBF00]                                                                 HERMES-AGENT Ex[/]"""
+[dim #FFBF00]                                                                 Code-Through[/]"""
 
 # ASCII Art - Hermes Caduceus (compact, fits in left panel)
 HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
@@ -823,8 +823,8 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Note: built dynamically by _build_compact_banner() to fit terminal width
 COMPACT_BANNER = """
 [bold #CD7F32]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #CD7F32]║[/]  [#FFD700]⚕ HERMES-AGENT Ex[/] [dim #B8860B]- AI Agent Framework[/]       [bold #CD7F32]║[/]
-[bold #CD7F32]║[/]  [#FFBF00]High-contrast terminal UX[/]   [dim #B8860B]Nous Research[/]    [bold #CD7F32]║[/]
+[bold #CD7F32]║[/]  [#FFD700]Code-Through[/] [dim #B8860B]- AI Agent Framework[/]       [bold #CD7F32]║[/]
+[bold #CD7F32]║[/]  [#FFBF00]High-contrast terminal UX[/]   [dim #B8860B]Code-Through[/]    [bold #CD7F32]║[/]
 [bold #CD7F32]╚══════════════════════════════════════════════════════════════╝[/]
 """
 
@@ -833,11 +833,11 @@ def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
     w = min(shutil.get_terminal_size().columns - 2, 64)
     if w < 30:
-        return "\n[#FFD700]⚕ HERMES-AGENT Ex[/] [dim #B8860B]- Nous Research[/]\n"
+        return "\n[#FFD700]Code-Through[/] [dim #B8860B]- Code-Through[/]\n"
     inner = w - 2  # inside the box border
     bar = "═" * w
-    line1 = "⚕ HERMES-AGENT Ex - AI Agent Framework"
-    line2 = "High-contrast terminal UX  ·  Nous Research"
+    line1 = "Code-Through - AI Agent Framework"
+    line2 = "High-contrast terminal UX  ·  Code-Through"
     # Truncate and pad to fit
     line1 = line1[:inner - 2].ljust(inner - 2)
     line2 = line2[:inner - 2].ljust(inner - 2)
@@ -932,12 +932,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         _session_c = _bskin.get_color("session_border", "#B8860B")
         _title_c = _bskin.get_color("banner_title", "#CD7F32")
         _border_c = _bskin.get_color("banner_border", "#CD7F32")
-        _agent_name = _bskin.get_branding("agent_name", "HERMES-AGENT Ex")
+        _agent_name = _bskin.get_branding("agent_name", "Code-Through")
     except Exception:
         _bskin = None
         _accent, _dim, _text = "#FFD700", "#B8860B", "#FFF8DC"
         _session_c, _title_c, _border_c = "#B8860B", "#CD7F32", "#CD7F32"
-        _agent_name = "HERMES-AGENT Ex"
+        _agent_name = "Code-Through"
 
     _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
     left_lines = ["", _hero, ""]
@@ -948,7 +948,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         model_short = model_short[:25] + "..."
     
     ctx_str = f" [dim {_dim}]·[/] [dim {_dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{_accent}]{model_short}[/]{ctx_str} [dim {_dim}]·[/] [dim {_dim}]Nous Research[/]")
+    left_lines.append(f"[{_accent}]{model_short}[/]{ctx_str} [dim {_dim}]·[/] [dim {_dim}]Code-Through[/]")
     left_lines.append(f"[dim {_dim}]{cwd}[/]")
     
     # Add session ID if provided
@@ -1147,7 +1147,7 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 class HermesCLI:
     """
-    Interactive CLI for the Hermes Agent.
+    Interactive CLI for the Code-Through.
     
     Provides a REPL interface with rich formatting, command history,
     and tool execution capabilities.
@@ -4708,7 +4708,7 @@ class HermesCLI:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
                 "Install with: pip install sounddevice numpy\n"
-                "Or: pip install hermes-agent[voice]"
+                "Or: pip install code-through[voice]"
             )
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(
@@ -4972,7 +4972,7 @@ class HermesCLI:
                 _cprint(f"  {_DIM}{line}{_RST}")
             if reqs["missing_packages"]:
                 _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
-                _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
+                _cprint(f"  {_DIM}Or: pip install code-through[voice]{_RST}")
             return
 
         with self._voice_lock:
@@ -5725,10 +5725,10 @@ class HermesCLI:
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to HERMES-AGENT Ex! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Code-Through! Type your message or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#E6F1FF")
         except Exception:
-            _welcome_text = "Welcome to HERMES-AGENT Ex! Type your message or /help for commands."
+            _welcome_text = "Welcome to Code-Through! Type your message or /help for commands."
             _welcome_color = "#E6F1FF"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
@@ -6928,7 +6928,7 @@ def main(
     workspace: str = None,
 ):
     """
-    Hermes Agent CLI - Interactive AI Assistant
+    Code-Through CLI - Interactive AI Assistant
     
     Args:
         query: Single query to execute (then exit). Alias: -q

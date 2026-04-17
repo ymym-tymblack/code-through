@@ -3,46 +3,46 @@
 Hermes CLI - Main entry point.
 
 Usage:
-    hermes                     # Interactive chat (default)
-    hermes chat                # Interactive chat
-    hermes store               # Watch workspace diffs and store review outputs
-    hermes codex-watch         # Backward-compatible alias for `hermes store`
-    hermes gateway             # Run gateway in foreground
-    hermes gateway start       # Start gateway as service
-    hermes gateway stop        # Stop gateway service
-    hermes gateway status      # Show gateway status
-    hermes gateway install     # Install gateway service
-    hermes gateway uninstall   # Uninstall gateway service
-    hermes setup               # Interactive setup wizard
-    hermes logout              # Clear stored authentication
-    hermes status              # Show status of all components
-    hermes cron                # Manage cron jobs
-    hermes cron list           # List cron jobs
-    hermes cron status         # Check if cron scheduler is running
-    hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
-    hermes honcho status                   # Show Honcho config and connection status
-    hermes honcho sessions                 # List directory → session name mappings
-    hermes honcho map <name>               # Map current directory to a session name
-    hermes honcho peer                     # Show peer names and dialectic settings
-    hermes honcho peer --user NAME         # Set user peer name
-    hermes honcho peer --ai NAME           # Set AI peer name
-    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    hermes honcho mode                     # Show current memory mode
-    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
-    hermes honcho tokens                   # Show token budget settings
-    hermes honcho tokens --context N       # Set session.context() token cap
-    hermes honcho tokens --dialectic N     # Set dialectic result char cap
-    hermes honcho identity                 # Show AI peer identity representation
-    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
+    codet                     # Interactive chat (default)
+    codet chat                # Interactive chat
+    codet store               # Watch workspace diffs and store review outputs
+    codet codex-watch         # Backward-compatible alias for `codet store`
+    codet gateway             # Run gateway in foreground
+    codet gateway start       # Start gateway as service
+    codet gateway stop        # Stop gateway service
+    codet gateway status      # Show gateway status
+    codet gateway install     # Install gateway service
+    codet gateway uninstall   # Uninstall gateway service
+    codet setup               # Interactive setup wizard
+    codet logout              # Clear stored authentication
+    codet status              # Show status of all components
+    codet cron                # Manage cron jobs
+    codet cron list           # List cron jobs
+    codet cron status         # Check if cron scheduler is running
+    codet doctor              # Check configuration and dependencies
+    codet honcho setup                    # Configure Honcho AI memory integration
+    codet honcho status                   # Show Honcho config and connection status
+    codet honcho sessions                 # List directory → session name mappings
+    codet honcho map <name>               # Map current directory to a session name
+    codet honcho peer                     # Show peer names and dialectic settings
+    codet honcho peer --user NAME         # Set user peer name
+    codet honcho peer --ai NAME           # Set AI peer name
+    codet honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    codet honcho mode                     # Show current memory mode
+    codet honcho mode [hybrid|honcho|local]  # Set memory mode
+    codet honcho tokens                   # Show token budget settings
+    codet honcho tokens --context N       # Set session.context() token cap
+    codet honcho tokens --dialectic N     # Set dialectic result char cap
+    codet honcho identity                 # Show AI peer identity representation
+    codet honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    codet honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
+    codet version             Show version
+    codet update              Update to latest version
+    codet uninstall           Uninstall Code-Through
+    codet acp                 Run as an ACP server for editor integration
+    codet sessions browse     Interactive session picker with search
 
-    hermes claw migrate --dry-run  # Preview migration without changes
+    codet claw migrate --dry-run  # Preview migration without changes
 """
 
 import argparse
@@ -435,7 +435,7 @@ def cmd_chat(args):
                 args.resume = resolved
             else:
                 print(f"No session found matching '{continue_val}'.")
-                print("Use 'hermes sessions list' to see available sessions.")
+                print("Use 'codet sessions list' to see available sessions.")
                 sys.exit(1)
         else:
             # -c with no argument — continue the most recent session
@@ -460,7 +460,7 @@ def cmd_chat(args):
         print()
         print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
         print()
-        print("  Run:  hermes setup")
+        print("  Run:  codet setup")
         print()
 
         from hermes_cli.setup import is_interactive_stdin, print_noninteractive_setup_guidance
@@ -479,7 +479,7 @@ def cmd_chat(args):
             cmd_setup(args)
             return
         print()
-        print("You can run 'hermes setup' at any time to configure.")
+        print("You can run 'codet setup' at any time to configure.")
         sys.exit(1)
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
@@ -659,7 +659,7 @@ def cmd_whatsapp(args):
             print("  ✓ Session cleared")
         else:
             print("\n✓ WhatsApp is configured and paired!")
-            print("  Start the gateway with: hermes gateway")
+            print("  Start the gateway with: codet gateway")
             return
 
     # ── Step 6: QR code pairing ──────────────────────────────────────────
@@ -690,23 +690,23 @@ def cmd_whatsapp(args):
         print()
         if wa_mode == "bot":
             print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
+            print("    1. Start the gateway:  codet gateway")
             print("    2. Send a message to the bot's WhatsApp number")
             print("    3. The agent will reply automatically")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  Tip: Agent responses are prefixed with '⚕ Code-Through'")
         else:
             print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
+            print("    1. Start the gateway:  codet gateway")
             print("    2. Open WhatsApp → Message Yourself")
             print("    3. Type a message — the agent will reply")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  Tip: Agent responses are prefixed with '⚕ Code-Through'")
             print("  so you can tell them apart from your own messages.")
         print()
-        print("  Or install as a service: hermes gateway install")
+        print("  Or install as a service: codet gateway install")
     else:
-        print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
+        print("⚠ Pairing may not have completed. Run 'codet whatsapp' to try again.")
 
 
 def cmd_setup(args):
@@ -1131,7 +1131,7 @@ def _model_flow_custom(config):
     else:
         if base_url or api_key:
             deactivate_provider()
-        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+        print("Endpoint saved. Use `/model` in chat or `codet model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "")
@@ -1630,7 +1630,7 @@ def _run_anthropic_oauth_flow(save_env_value):
         print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
         print("    2. Run:                  claude setup-token")
         print("    3. Follow the browser prompts to authorize")
-        print("    4. Re-run:               hermes model")
+        print("    4. Re-run:               codet model")
         print()
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
@@ -1764,7 +1764,7 @@ def _model_flow_anthropic(config, current_model=""):
         # Update config with provider — clear base_url since
         # resolve_runtime_provider() always hardcodes Anthropic's URL.
         # Leaving a stale base_url in config can contaminate other
-        # providers if the user switches without running 'hermes model'.
+        # providers if the user switches without running 'codet model'.
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -1818,7 +1818,7 @@ def cmd_config(args):
 
 def cmd_version(args):
     """Show version."""
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(f"Code-Through v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
     # Show Python version
@@ -1833,13 +1833,13 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
+    """Uninstall Code-Through."""
     from hermes_cli.uninstall import run_uninstall
     run_uninstall(args)
 
 
 def _update_via_zip(args):
-    """Update Hermes Agent by downloading a ZIP archive.
+    """Update Code-Through by downloading a ZIP archive.
     
     Used on Windows when git file I/O is broken (antivirus, NTFS filter 
     drivers causing 'Invalid argument' errors on file creation).
@@ -1850,20 +1850,20 @@ def _update_via_zip(args):
     from urllib.request import urlretrieve
     
     branch = "main"
-    zip_url = f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+    zip_url = f"https://github.com/ymym-tymblack/code-through/archive/refs/heads/{branch}.zip"
     
     print("→ Downloading latest version...")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
-        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        tmp_dir = tempfile.mkdtemp(prefix="codet-update-")
+        zip_path = os.path.join(tmp_dir, f"code-through-{branch}.zip")
         urlretrieve(zip_url, zip_path)
         
         print("→ Extracting...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
             zf.extractall(tmp_dir)
         
-        # GitHub ZIPs extract to hermes-agent-<branch>/
-        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
+        # GitHub ZIPs extract to code-through-<branch>/
+        extracted = os.path.join(tmp_dir, f"code-through-{branch}")
         if not os.path.isdir(extracted):
             # Try to find it
             for d in os.listdir(tmp_dir):
@@ -1947,7 +1947,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
     from datetime import datetime, timezone
 
-    stash_name = datetime.now(timezone.utc).strftime("hermes-update-autostash-%Y%m%d-%H%M%S")
+    stash_name = datetime.now(timezone.utc).strftime("codet-update-autostash-%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
@@ -2009,10 +2009,10 @@ def _restore_stashed_changes(
 
 
 def cmd_update(args):
-    """Update Hermes Agent to the latest version."""
+    """Update Code-Through to the latest version."""
     import shutil
     
-    print("⚕ Updating Hermes Agent...")
+    print("⚕ Updating Code-Through...")
     print()
     
     # Try git-based update first, fall back to ZIP download on Windows
@@ -2025,7 +2025,7 @@ def cmd_update(args):
             use_zip_update = True
         else:
             print("✗ Not a git repository. Please reinstall:")
-            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+            print("  curl -fsSL https://raw.githubusercontent.com/ymym-tymblack/code-through/main/scripts/install.sh | bash")
             sys.exit(1)
     
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
@@ -2170,7 +2170,7 @@ def cmd_update(args):
                     print("✓ Configuration updated!")
             else:
                 print()
-                print("Skipped. Run 'hermes config migrate' later to configure.")
+                print("Skipped. Run 'codet config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
         
@@ -2194,13 +2194,13 @@ def cmd_update(args):
                     print("✓ Gateway restarted.")
                 else:
                     print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
-                    print("  Try manually: hermes gateway restart")
+                    print("  Try manually: codet gateway restart")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass  # No systemd (macOS, WSL1, etc.) — skip silently
         
         print()
         print("Tip: You can now select a provider and model:")
-        print("  hermes model              # Select provider and model")
+        print("  codet model              # Select provider and model")
         
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
@@ -2216,7 +2216,7 @@ def cmd_update(args):
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
-    When a user types ``hermes -c Pokemon Agent Dev`` without quoting the
+    When a user types ``codet -c Pokemon Agent Dev`` without quoting the
     session name, argparse sees three separate tokens.  This function merges
     them into a single argument so argparse receives
     ``['-c', 'Pokemon Agent Dev']`` instead.
@@ -2252,34 +2252,34 @@ def _coalesce_session_name_args(argv: list) -> list:
 
 
 def main():
-    """Main entry point for hermes CLI."""
+    """Main entry point for codet CLI."""
     parser = argparse.ArgumentParser(
-        prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        prog="codet",
+        description="Code-Through - AI assistant with tool-calling capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    hermes                        Start interactive chat
-    hermes chat -q "Hello"        Single query mode
-    hermes -c                     Resume the most recent session
-    hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
-    hermes setup                  Run setup wizard
-    hermes logout                 Clear stored authentication
-    hermes model                  Select default model
-    hermes config                 View configuration
-    hermes config edit            Edit config in $EDITOR
-    hermes config set model gpt-4 Set a config value
-    hermes gateway                Run messaging gateway
-    hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install as system service
-    hermes sessions list          List past sessions
-    hermes sessions browse        Interactive session picker
-    hermes sessions rename ID T   Rename/title a session
-    hermes update                 Update to latest version
+    codet                        Start interactive chat
+    codet chat -q "Hello"        Single query mode
+    codet -c                     Resume the most recent session
+    codet -c "my project"        Resume a session by name (latest in lineage)
+    codet --resume <session_id>  Resume a specific session by ID
+    codet setup                  Run setup wizard
+    codet logout                 Clear stored authentication
+    codet model                  Select default model
+    codet config                 View configuration
+    codet config edit            Edit config in $EDITOR
+    codet config set model gpt-4 Set a config value
+    codet gateway                Run messaging gateway
+    codet -w                     Start in isolated git worktree
+    codet gateway install        Install as system service
+    codet sessions list          List past sessions
+    codet sessions browse        Interactive session picker
+    codet sessions rename ID T   Rename/title a session
+    codet update                 Update to latest version
 
 For more help on a command:
-    hermes <command> --help
+    codet <command> --help
 """
     )
     
@@ -2335,7 +2335,7 @@ For more help on a command:
     chat_parser = subparsers.add_parser(
         "chat",
         help="Interactive chat with the agent",
-        description="Start an interactive chat session with Hermes Agent"
+        description="Start an interactive chat session with Code-Through"
     )
     chat_parser.add_argument(
         "-q", "--query",
@@ -2467,8 +2467,8 @@ For more help on a command:
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard. "
-                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+        description="Configure Code-Through with an interactive wizard. "
+                    "Run a specific section: codet setup model|terminal|gateway|tools|agent"
     )
     setup_parser.add_argument(
         "section",
@@ -2524,7 +2524,7 @@ For more help on a command:
     login_parser.add_argument(
         "--client-id",
         default=None,
-        help="OAuth client id to use (default: hermes-cli)"
+        help="OAuth client id to use (default: codet-cli)"
     )
     login_parser.add_argument(
         "--scope",
@@ -2575,7 +2575,7 @@ For more help on a command:
     status_parser = subparsers.add_parser(
         "status",
         help="Show status of all components",
-        description="Display status of Hermes Agent components"
+        description="Display status of Code-Through components"
     )
     status_parser.add_argument(
         "--all",
@@ -2617,7 +2617,7 @@ For more help on a command:
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Check configuration and dependencies",
-        description="Diagnose issues with Hermes Agent setup"
+        description="Diagnose issues with Code-Through setup"
     )
     doctor_parser.add_argument(
         "--fix",
@@ -2632,7 +2632,7 @@ For more help on a command:
     config_parser = subparsers.add_parser(
         "config",
         help="View and edit configuration",
-        description="Manage Hermes Agent configuration"
+        description="Manage Code-Through configuration"
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     
@@ -3007,12 +3007,12 @@ For more help on a command:
                 print("Cancelled.")
                 return
 
-            # Launch hermes --resume <id> by replacing the current process
+            # Launch codet --resume <id> by replacing the current process
             print(f"Resuming session: {selected_id}")
             import shutil
-            hermes_bin = shutil.which("hermes")
+            hermes_bin = shutil.which("codet")
             if hermes_bin:
-                os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
+                os.execvp(hermes_bin, ["codet", "--resume", selected_id])
             else:
                 # Fallback: re-invoke via python -m
                 os.execvp(
@@ -3152,7 +3152,7 @@ For more help on a command:
     # =========================================================================
     update_parser = subparsers.add_parser(
         "update",
-        help="Update Hermes Agent to the latest version",
+        help="Update Code-Through to the latest version",
         description="Pull the latest changes from git and reinstall dependencies"
     )
     update_parser.set_defaults(func=cmd_update)
@@ -3162,8 +3162,8 @@ For more help on a command:
     # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
-        help="Uninstall Hermes Agent",
-        description="Remove Hermes Agent from your system. Can keep configs/data for reinstall."
+        help="Uninstall Code-Through",
+        description="Remove Code-Through from your system. Can keep configs/data for reinstall."
     )
     uninstall_parser.add_argument(
         "--full",
@@ -3182,12 +3182,12 @@ For more help on a command:
     # =========================================================================
     acp_parser = subparsers.add_parser(
         "acp",
-        help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
-        description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
+        help="Run Code-Through as an ACP (Agent Client Protocol) server",
+        description="Start Code-Through in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
 
     def cmd_acp(args):
-        """Launch Hermes Agent as an ACP server."""
+        """Launch Code-Through as an ACP server."""
         try:
             from acp_adapter.entry import main as acp_main
             acp_main()
@@ -3203,7 +3203,7 @@ For more help on a command:
     # =========================================================================
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
-    # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
+    # e.g. ``codet -c Pokemon Agent Dev`` → ``codet -c 'Pokemon Agent Dev'``
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
     args = parser.parse_args(_processed_argv)
     

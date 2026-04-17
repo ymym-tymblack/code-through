@@ -143,7 +143,7 @@ class SkinConfig:
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
-        "description": "Hermes Ex — inverted gold palette with bronze primary accents",
+        "description": "Code-Through — focused coding agent palette",
         "colors": {
             "banner_border": "#CD7F32",
             "banner_title": "#CD7F32",
@@ -165,10 +165,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             # Empty = use hardcoded defaults in display.py
         },
         "branding": {
-            "agent_name": "HERMES-AGENT Ex",
-            "welcome": "Welcome to HERMES-AGENT Ex! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes Ex ",
+            "agent_name": "Code-Through",
+            "welcome": "Welcome to Code-Through! Type your message or /help for commands.",
+            "goodbye": "Goodbye!",
+            "response_label": " Code-Through ",
             "prompt_symbol": "❯ ",
             "help_header": "(^_^)? Available Commands",
         },

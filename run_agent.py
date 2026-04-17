@@ -113,7 +113,7 @@ HONCHO_TOOL_NAMES = {
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
 
-    When hermes-agent runs as a systemd service, Docker container, or headless
+    When code-through runs as a systemd service, Docker container, or headless
     daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
     exhaustion, socket reset). Any print() call then raises
     ``OSError: [Errno 5] Input/output error``, which can crash agent setup or
@@ -612,8 +612,8 @@ class AIAgent:
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Hermes Agent",
+                        "HTTP-Referer": "https://github.com/ymym-tymblack/code-through",
+                        "X-OpenRouter-Title": "Code-Through",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
                 elif "api.kimi.com" in effective_base.lower():
@@ -639,8 +639,8 @@ class AIAgent:
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                         "base_url": OPENROUTER_BASE_URL,
                         "default_headers": {
-                            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Hermes Agent",
+                            "HTTP-Referer": "https://github.com/ymym-tymblack/code-through",
+                            "X-OpenRouter-Title": "Code-Through",
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
@@ -1853,7 +1853,7 @@ class AIAgent:
         )
         if _ai_peer_name:
             _identity = DEFAULT_AGENT_IDENTITY.replace(
-                "You are Hermes Agent",
+                "You are Code-Through",
                 f"You are {_ai_peer_name}",
                 1,
             )
@@ -3126,7 +3126,7 @@ class AIAgent:
 
         # Nous Portal product attribution
         if _is_nous:
-            extra_body["tags"] = ["product=hermes-agent"]
+            extra_body["tags"] = ["product=code-through"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -4082,7 +4082,7 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=hermes-agent"]
+                summary_extra_body["tags"] = ["product=code-through"]
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
