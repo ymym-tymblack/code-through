@@ -210,6 +210,87 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 _MAX_TOOL_WORKERS = 8
 
 
+class _CodexStreamAccumulator:
+    """Rebuild minimal Responses output from Codex streaming events."""
+
+    def __init__(self):
+        self._items = {}
+        self._text_parts = {}
+
+    def add(self, event):
+        event_type = self._get(event, "type")
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            output_index = self._get(event, "output_index")
+            item = self._get(event, "item")
+            if output_index is not None and item is not None:
+                self._items[int(output_index)] = item
+            return
+
+        if event_type == "response.output_text.delta":
+            output_index = self._get(event, "output_index")
+            if output_index is None:
+                output_index = 0
+            delta = self._get(event, "delta")
+            if isinstance(delta, str) and delta:
+                self._text_parts.setdefault(int(output_index), []).append(delta)
+
+    def recover_empty_final_response(self, final_response):
+        output = getattr(final_response, "output", None) if final_response is not None else None
+        if isinstance(output, list) and output:
+            return final_response
+
+        recovered_output = self._recovered_output()
+        if not recovered_output:
+            return final_response
+
+        return SimpleNamespace(
+            output=recovered_output,
+            output_text="\n".join(
+                item.content[0].text
+                for item in recovered_output
+                if getattr(item, "type", None) == "message"
+                and getattr(item, "content", None)
+                and getattr(item.content[0], "text", None)
+            ),
+            usage=getattr(final_response, "usage", None),
+            status=getattr(final_response, "status", "completed"),
+            model=getattr(final_response, "model", None),
+            error=getattr(final_response, "error", None),
+            incomplete_details=getattr(final_response, "incomplete_details", None),
+        )
+
+    def _recovered_output(self):
+        indexes = sorted(set(self._items) | set(self._text_parts))
+        recovered = []
+        for index in indexes:
+            item = self._items.get(index)
+            item_type = self._get(item, "type")
+            text = "".join(self._text_parts.get(index, [])).strip()
+
+            if item_type == "message" or (item is None and text):
+                recovered.append(self._message_item(item, text))
+            elif item is not None:
+                recovered.append(item)
+        return recovered
+
+    def _message_item(self, item, text: str):
+        content = self._get(item, "content")
+        if content:
+            return item
+        return SimpleNamespace(
+            type="message",
+            id=self._get(item, "id"),
+            status=self._get(item, "status") or "completed",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )
+
+    @staticmethod
+    def _get(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+
 def _inject_honcho_turn_context(content, turn_context: str):
     """Append Honcho recall to the current-turn user message without mutating history.
 
@@ -2470,13 +2551,16 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict):
         """Execute one streaming Responses API request and return the final response."""
+        api_kwargs = self._codex_stream_api_kwargs(api_kwargs)
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
             try:
+                accumulator = _CodexStreamAccumulator()
                 with self.client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
-                    return stream.get_final_response()
+                    for event in stream:
+                        accumulator.add(event)
+                    final_response = stream.get_final_response()
+                    return accumulator.recover_empty_final_response(final_response)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -2494,9 +2578,25 @@ class AIAgent:
                     return self._run_codex_create_stream_fallback(api_kwargs)
                 raise
 
+    def _codex_stream_api_kwargs(self, api_kwargs: dict) -> dict:
+        """Adjust Responses API kwargs for the ChatGPT Codex streaming backend."""
+        if not isinstance(api_kwargs, dict):
+            return api_kwargs
+        normalized = dict(api_kwargs)
+        base_url = str(getattr(self, "base_url", "") or "").lower()
+        is_chatgpt_codex = (
+            getattr(self, "provider", None) == "openai-codex"
+            or "chatgpt.com/backend-api/codex" in base_url
+        )
+        if is_chatgpt_codex:
+            # The ChatGPT Codex backend currently rejects this public
+            # Responses API field on streaming requests.
+            normalized.pop("max_output_tokens", None)
+        return normalized
+
     def _run_codex_create_stream_fallback(self, api_kwargs: dict):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
-        fallback_kwargs = dict(api_kwargs)
+        fallback_kwargs = self._codex_stream_api_kwargs(api_kwargs)
         fallback_kwargs["stream"] = True
         fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = self.client.responses.create(**fallback_kwargs)

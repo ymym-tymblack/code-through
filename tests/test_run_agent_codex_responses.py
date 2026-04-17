@@ -127,7 +127,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = list(events or [])
         self._final_response = final_response
         self._final_error = final_error
 
@@ -138,7 +139,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -293,6 +294,87 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_recovers_text_when_final_response_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    empty_final = SimpleNamespace(
+        output=[],
+        output_text="",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5.4",
+    )
+    events = [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(type="response.output_item.added", output_index=0, item=SimpleNamespace(type="message", id="msg_1")),
+        SimpleNamespace(type="response.output_text.delta", output_index=0, content_index=0, delta="po"),
+        SimpleNamespace(type="response.output_text.delta", output_index=0, content_index=0, delta="ng"),
+        SimpleNamespace(type="response.output_item.done", output_index=0, item=SimpleNamespace(type="message", id="msg_1")),
+        SimpleNamespace(type="response.completed", response=empty_final),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(events=events, final_response=empty_final),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].type == "message"
+    assert response.output[0].content[0].text == "pong"
+    assert response.output_text == "pong"
+
+
+def test_run_codex_stream_keeps_tool_call_when_final_response_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    empty_final = SimpleNamespace(output=[], status="completed", model="gpt-5.4")
+    tool_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="{}",
+    )
+    events = [
+        SimpleNamespace(type="response.output_item.added", output_index=0, item=tool_item),
+        SimpleNamespace(type="response.output_item.done", output_index=0, item=tool_item),
+        SimpleNamespace(type="response.completed", response=empty_final),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(events=events, final_response=empty_final),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].type == "function_call"
+    assert response.output[0].call_id == "call_1"
+
+
+def test_run_codex_stream_strips_max_output_tokens_for_chatgpt_backend(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    seen = {}
+
+    def _fake_stream(**kwargs):
+        seen.update(kwargs)
+        return _FakeResponsesStream(final_response=_codex_message_response("ok"))
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+    kwargs = _codex_request_kwargs()
+    kwargs["max_output_tokens"] = 64
+
+    response = agent._run_codex_stream(kwargs)
+    assert response.output[0].content[0].text == "ok"
+    assert "max_output_tokens" not in seen
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
