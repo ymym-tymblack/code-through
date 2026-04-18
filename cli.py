@@ -3059,27 +3059,28 @@ class HermesCLI:
             if self._app:
                 self._invalidate(min_interval=0)
 
-        self._review_watcher = CodexCompanionWatcher(
-            workspace_root,
-            poll_interval=float(review_cfg.get("poll_interval", 1.0)),
-            debounce_seconds=float(review_cfg.get("debounce_seconds", 2.0)),
-            max_file_bytes=int(review_cfg.get("max_file_bytes", 200_000)),
-            ignore_globs=review_cfg.get("exclude_globs", []),
-            runtime={
+        watcher_kwargs = {
+            "poll_interval": float(review_cfg.get("poll_interval", 1.0)),
+            "debounce_seconds": float(review_cfg.get("debounce_seconds", 2.0)),
+            "max_file_bytes": int(review_cfg.get("max_file_bytes", 200_000)),
+            "ignore_globs": review_cfg.get("exclude_globs", []),
+            "runtime": {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
             },
-            natural_language=self.review_natural_language,
-            on_event=_on_event,
-            on_analysis=_on_analysis,
-            stop_event=self._review_stop_event,
-        )
+            "natural_language": self.review_natural_language,
+            "on_event": _on_event,
+            "on_analysis": _on_analysis,
+            "stop_event": self._review_stop_event,
+        }
 
         def _run() -> None:
             try:
-                self._review_watcher.run()
+                watcher = CodexCompanionWatcher(workspace_root, **watcher_kwargs)
+                self._review_watcher = watcher
+                watcher.run()
             except Exception as exc:
                 print()
                 _cprint(f"  ⚠️  Review watcher stopped: {exc}")
