@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -711,6 +712,122 @@ def detect_changes(
     return changes
 
 
+_SUPPRESSED_GIT_REFLOG_PREFIXES = (
+    "checkout:",
+    "reset:",
+    "restore:",
+    "rebase",
+    "merge",
+    "pull",
+)
+
+
+def _resolve_git_dir(root: Path) -> Optional[Path]:
+    """Return the git metadata directory for root or one of its parents."""
+    current = root.resolve()
+    candidates = (current, *current.parents)
+    for candidate in candidates:
+        dotgit = candidate / ".git"
+        if dotgit.is_dir():
+            return dotgit
+        if dotgit.is_file():
+            try:
+                content = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            prefix = "gitdir:"
+            if content.lower().startswith(prefix):
+                raw = content[len(prefix):].strip()
+                git_dir = Path(raw)
+                if not git_dir.is_absolute():
+                    git_dir = (candidate / git_dir).resolve()
+                if git_dir.exists():
+                    return git_dir
+    return None
+
+
+def _read_git_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _read_git_log_tail(path: Path) -> tuple[int, int, str]:
+    try:
+        stat = path.stat()
+        with path.open("rb") as fh:
+            if stat.st_size > 4096:
+                fh.seek(stat.st_size - 4096)
+            raw = fh.read()
+    except OSError:
+        return (0, 0, "")
+    text = raw.decode("utf-8", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    return (stat.st_size, stat.st_mtime_ns, lines[-1] if lines else "")
+
+
+def _git_operation_marker(root: Path) -> dict[str, Any]:
+    git_dir = _resolve_git_dir(root)
+    if git_dir is None:
+        return {}
+    return {
+        "git_dir": str(git_dir),
+        "head": _read_git_text(git_dir / "HEAD"),
+        "head_log": _read_git_log_tail(git_dir / "logs" / "HEAD"),
+        "stash_log": _read_git_log_tail(git_dir / "logs" / "refs" / "stash"),
+    }
+
+
+def _is_suppressed_git_reflog_line(line: str) -> bool:
+    lowered = line.lower()
+    return any(token in lowered for token in _SUPPRESSED_GIT_REFLOG_PREFIXES)
+
+
+def _git_operation_marker_changed(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    if not previous or not current:
+        return False
+    if previous.get("git_dir") != current.get("git_dir"):
+        return False
+    if previous.get("head") != current.get("head"):
+        return True
+    previous_head_log = previous.get("head_log")
+    current_head_log = current.get("head_log")
+    if previous_head_log != current_head_log:
+        line = str(current_head_log[-1] if current_head_log else "")
+        if _is_suppressed_git_reflog_line(line):
+            return True
+    if previous.get("stash_log") != current.get("stash_log"):
+        return True
+    return False
+
+
+def _changes_have_git_status_delta(root: Path, changes: Iterable[PendingChange]) -> bool:
+    """Return False when changed paths are clean relative to git status.
+
+    This suppresses automatic reviews for branch checkout/stash operations that
+    rewrite files but leave no current worktree delta to review.
+    """
+    paths = [change.path for change in changes]
+    if not paths:
+        return False
+    if _resolve_git_dir(root) is None:
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--", *paths],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return True
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
+
+
 class HermesStore:
     def __init__(self, root: Optional[Path] = None):
         ensure_hermes_home()
@@ -1342,6 +1459,7 @@ class CodexCompanionWatcher:
         on_event: Optional[Callable[[dict, Path], None]] = None,
         on_analysis: Optional[Callable[[dict, Path], None]] = None,
         stop_event: Optional[threading.Event] = None,
+        suppress_git_operation_events: bool = True,
     ):
         self.workspace_root = workspace_root.resolve()
         self.poll_interval = poll_interval
@@ -1355,6 +1473,7 @@ class CodexCompanionWatcher:
         self.on_event = on_event
         self.on_analysis = on_analysis
         self.stop_event = stop_event or threading.Event()
+        self.suppress_git_operation_events = suppress_git_operation_events
         self.session_id = uuid.uuid4().hex
         self.store = HermesStore()
         self._previous_snapshot = collect_workspace_snapshot(
@@ -1363,6 +1482,7 @@ class CodexCompanionWatcher:
             ignore_globs=self.ignore_globs,
         )
         self._pending: Dict[str, PendingChange] = {}
+        self._git_operation_marker = _git_operation_marker(self.workspace_root)
 
     def _merge_changes(self, changes: Dict[str, PendingChange]) -> None:
         for rel_path, change in changes.items():
@@ -1482,8 +1602,19 @@ class CodexCompanionWatcher:
                     ignore_globs=self.ignore_globs,
                 )
                 changes = detect_changes(self._previous_snapshot, current_snapshot)
+                current_git_marker = _git_operation_marker(self.workspace_root)
+                suppress_for_git_operation = False
+                if changes and self.suppress_git_operation_events:
+                    if _git_operation_marker_changed(self._git_operation_marker, current_git_marker):
+                        suppress_for_git_operation = True
+                    elif not _changes_have_git_status_delta(self.workspace_root, changes.values()):
+                        suppress_for_git_operation = True
                 self._previous_snapshot = current_snapshot
-                if changes:
+                self._git_operation_marker = current_git_marker
+                if suppress_for_git_operation:
+                    self._pending = {}
+                    changes = {}
+                elif changes:
                     self._merge_changes(changes)
                 event = self._flush_ready(force=self.once)
                 if event is not None:
@@ -1579,6 +1710,8 @@ __all__ = [
     "collect_related_context",
     "collect_target_snapshot",
     "detect_changes",
+    "_changes_have_git_status_delta",
+    "_git_operation_marker_changed",
     "explain_file",
     "extract_promotion_candidates",
     "find_symbol_candidates",

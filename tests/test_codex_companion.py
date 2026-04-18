@@ -1,4 +1,5 @@
 import json
+import subprocess
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,8 @@ from hermes_cli.codex_companion import (
     collect_target_snapshot,
     collect_workspace_snapshot,
     detect_changes,
+    _changes_have_git_status_delta,
+    _git_operation_marker_changed,
     extract_promotion_candidates,
     run_codex_watch,
 )
@@ -130,6 +133,63 @@ def test_detect_changes_handles_created_modified_deleted(tmp_path):
     assert changes["created.py"].change_type == "created"
     assert changes["created.py"].old_content == ""
     assert changes["deleted.py"].new_content == ""
+
+
+def test_changes_have_git_status_delta_false_after_checkout_revert(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    target = tmp_path / "demo.py"
+    target.write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "demo.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+
+    target.write_text("v2\n", encoding="utf-8")
+    before = collect_workspace_snapshot(tmp_path)
+    subprocess.run(["git", "checkout", "--", "demo.py"], cwd=tmp_path, check=True)
+    after = collect_workspace_snapshot(tmp_path)
+    changes = detect_changes(before, after, now_ts=123.0)
+
+    assert changes
+    assert _changes_have_git_status_delta(tmp_path, changes.values()) is False
+
+
+def test_changes_have_git_status_delta_true_for_manual_edit(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    target = tmp_path / "demo.py"
+    target.write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "demo.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+
+    before = collect_workspace_snapshot(tmp_path)
+    target.write_text("v2\n", encoding="utf-8")
+    after = collect_workspace_snapshot(tmp_path)
+    changes = detect_changes(before, after, now_ts=123.0)
+
+    assert changes
+    assert _changes_have_git_status_delta(tmp_path, changes.values()) is True
+
+
+def test_git_operation_marker_changed_detects_checkout_and_stash():
+    previous = {
+        "git_dir": "/repo/.git",
+        "head": "ref: refs/heads/main\n",
+        "head_log": (10, 1, "commit: init"),
+        "stash_log": (0, 0, ""),
+    }
+    checkout = {
+        **previous,
+        "head_log": (30, 2, "abc def User <u@example.com> 1 +0000\tcheckout: moving from main to feature"),
+    }
+    stash = {
+        **previous,
+        "stash_log": (20, 3, "abc def User <u@example.com> 1 +0000\tWIP on main: init"),
+    }
+
+    assert _git_operation_marker_changed(previous, checkout) is True
+    assert _git_operation_marker_changed(previous, stash) is True
 
 
 def test_build_diff_text_uses_dev_null_for_created_and_deleted():
