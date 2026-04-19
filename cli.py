@@ -7006,6 +7006,7 @@ def main(
             print(f"Workspace is not a directory: {workspace_path}")
             return
         os.environ["TERMINAL_CWD"] = str(workspace_path)
+        os.environ["CODET_OUTPUT_ROOT"] = str(workspace_path)
         os.chdir(workspace_path)
 
     # Handle query shorthand

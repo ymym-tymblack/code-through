@@ -43,6 +43,7 @@ DEFAULT_IGNORE_DIRS = {
     "build",
     "__pycache__",
     ".mypy_cache",
+    "codet-output",
     ".pytest_cache",
     ".ruff_cache",
 }
@@ -876,6 +877,65 @@ class HermesStore:
         path.write_text(json.dumps(event_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    def _command_output_dir(self, command: str, workspace_root: str = "") -> Path:
+        explicit_root = os.getenv("CODET_OUTPUT_ROOT", "").strip()
+        if explicit_root and command in {"review", "explain", "flow"}:
+            path = Path(explicit_root).expanduser() / "codet-output" / command
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        self.outputs_dir.mkdir(parents=True, exist_ok=True)
+        return self.outputs_dir
+
+    @staticmethod
+    def _format_command_output_markdown(payload: dict) -> str:
+        metadata_json = json.dumps(payload, ensure_ascii=False, indent=2)
+        title = str(payload.get("title") or payload.get("command") or "Output")
+        subtitle = str(payload.get("subtitle") or "").strip()
+        body = str(payload.get("content", {}).get("text") or "")
+        lines = [
+            "<!-- codet-output",
+            metadata_json,
+            "-->",
+            "",
+            f"# {title}",
+        ]
+        if subtitle:
+            lines.extend(["", f"_Source: {subtitle}_"])
+        lines.extend([
+            "",
+            f"- Command: `{payload.get('command', '')}`",
+            f"- Status: `{payload.get('status', '')}`",
+            f"- Session: `{payload.get('session_id', '')}`",
+            f"- Workspace: `{payload.get('workspace_root', '')}`",
+            "",
+            body or "(No output generated)",
+            "",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _load_command_output_payload(path: Path) -> Optional[dict]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        if path.suffix == ".json":
+            try:
+                return json.loads(text)
+            except Exception:
+                return None
+        marker = "<!-- codet-output"
+        if not text.startswith(marker):
+            return None
+        end = text.find("-->")
+        if end == -1:
+            return None
+        raw = text[len(marker):end].strip()
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
     def save_command_output(
         self,
         *,
@@ -909,9 +969,9 @@ class HermesStore:
             "metadata": metadata or {},
         }
         timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime(created_at))
-        filename = f"{timestamp}_{_slugify(command)}_{_slugify(title)}_{output_id[:8]}.json"
-        path = self.outputs_dir / filename
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        filename = f"{timestamp}_{_slugify(command)}_{_slugify(title)}_{output_id[:8]}.md"
+        path = self._command_output_dir(command, workspace_root) / filename
+        path.write_text(self._format_command_output_markdown(payload), encoding="utf-8")
         return path
 
     def save_analysis(self, event_id: str, payload: dict) -> Path:
@@ -932,11 +992,23 @@ class HermesStore:
         command: Optional[str] = None,
         title: Optional[str] = None,
     ) -> Optional[dict]:
-        candidates = sorted(self.outputs_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+        search_dirs = [self.outputs_dir]
+        explicit_root = os.getenv("CODET_OUTPUT_ROOT", "").strip()
+        if explicit_root:
+            base = Path(explicit_root).expanduser() / "codet-output"
+            if command:
+                search_dirs.insert(0, base / command)
+            else:
+                search_dirs = [base / name for name in ("review", "explain", "flow")] + search_dirs
+        candidates = []
+        for directory in search_dirs:
+            if directory.exists():
+                candidates.extend(directory.glob("*.md"))
+                candidates.extend(directory.glob("*.json"))
+        candidates = sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
         for candidate in candidates:
-            try:
-                payload = json.loads(candidate.read_text(encoding="utf-8"))
-            except Exception:
+            payload = self._load_command_output_payload(candidate)
+            if payload is None:
                 continue
             if payload.get("kind") != "command_output":
                 continue

@@ -234,7 +234,8 @@ def test_companion_store_persists_event_and_analysis(tmp_path):
     analysis_path = store.save_analysis("evt1", analysis)
 
     saved_event = json.loads(event_path.read_text(encoding="utf-8"))
-    saved_output = json.loads(analysis_path.read_text(encoding="utf-8"))
+    saved_output = store.load_latest_output(command="review", title="Diff Review")
+    assert analysis_path.suffix == ".md"
     assert saved_event["event_id"] == "evt1"
     assert saved_event["kind"] == "diff_event"
     assert saved_output["command"] == "review"
@@ -439,7 +440,7 @@ def test_process_event_saves_analysis_without_printing_full_body(tmp_path, capsy
     assert "promotion_candidates" not in payload["metadata"]
 
 
-def test_store_command_output_writes_readable_multiline_json(tmp_path):
+def test_store_command_output_writes_readable_multiline_markdown(tmp_path):
     store = HermesStore(root=tmp_path / "store")
 
     output_path = store.save_command_output(
@@ -452,11 +453,37 @@ def test_store_command_output_writes_readable_multiline_json(tmp_path):
         metadata={"symbol": "forward"},
     )
 
-    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert output_path.suffix == ".md"
+    text = output_path.read_text(encoding="utf-8")
+    assert text.startswith("<!-- codet-output")
+    assert "# Flow Explain" in text
+    assert "## 概要" in text
+    payload = store.load_latest_output(command="flow", title="Flow Explain")
     assert payload["kind"] == "command_output"
     assert payload["command"] == "flow"
     assert payload["content"]["lines"] == ["## 概要", "line one", "line two"]
     assert payload["metadata"]["symbol"] == "forward"
+
+
+def test_store_command_output_writes_to_workspace_codet_output_when_configured(tmp_path, monkeypatch):
+    store = HermesStore(root=tmp_path / "store")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("CODET_OUTPUT_ROOT", str(workspace))
+
+    output_path = store.save_command_output(
+        command="review",
+        title="Diff Review",
+        body="review body",
+        workspace_root=str(workspace),
+        session_id="sess1",
+    )
+
+    assert output_path.parent == workspace / "codet-output" / "review"
+    assert output_path.suffix == ".md"
+    assert output_path.exists()
+    payload = store.load_latest_output(command="review", title="Diff Review")
+    assert payload["content"]["text"] == "review body"
 
 
 def test_store_migrates_legacy_codex_companion_directory(tmp_path):
