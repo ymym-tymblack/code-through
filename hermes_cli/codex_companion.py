@@ -1020,6 +1020,20 @@ def _default_analysis_model() -> str:
     return "anthropic/claude-opus-4.6"
 
 
+def _code_evidence_instruction(language: Optional[str]) -> str:
+    if _normalize_natural_language(language) == "ja":
+        return (
+            "各セクションでは、説明対象の直前に該当コードを短い fenced code block として添付してください。"
+            "コード引用には file path や symbol 名の見出しを付け、必要最小限の行だけを引用してください。"
+            "diff 由来の review では、変更された行や周辺の短い hunk を優先してください。"
+        )
+    return (
+        "In each section, attach the relevant code before the explanation as a short fenced code block. "
+        "Label each excerpt with its file path or symbol, and quote only the minimum lines needed. "
+        "For diff reviews, prefer changed lines or a short surrounding hunk."
+    )
+
+
 def _build_analysis_prompt(event: dict, *, natural_language: Optional[str] = None) -> str:
     event = _prune_event(event)
     spec = _language_spec(natural_language)
@@ -1028,6 +1042,7 @@ def _build_analysis_prompt(event: dict, *, natural_language: Optional[str] = Non
         f"You are reviewing a code change-set produced by a coding agent for a developer in {spec['name']}.",
         "Use the diff as the primary evidence. Only infer intent when strongly supported.",
         "If you need extra context, you may read the changed files and related files, but stay focused.",
+        _code_evidence_instruction(natural_language),
         "",
         f"Return exactly these sections in {spec['name']}:",
         *spec["review_sections"],
@@ -1069,6 +1084,7 @@ def build_file_explanation_prompt(
     lines = [
         f"You are explaining source code to a developer in {spec['name']}.",
         "Prefer direct evidence from the target file. Read additional files only if necessary.",
+        _code_evidence_instruction(natural_language),
         "",
         f"Return exactly these sections in {spec['name']}:",
         *spec["file_sections"],
@@ -1173,6 +1189,7 @@ def build_directory_explanation_prompt(
     lines = [
         f"You are explaining a source directory to a developer in {spec['name']}.",
         "Prefer direct evidence from the listed files. Stay focused on architecture, call flow, and responsibilities.",
+        _code_evidence_instruction(natural_language),
         "",
         f"Return exactly these sections in {spec['name']}:",
         *spec["directory_sections"],
@@ -1221,6 +1238,7 @@ def build_incremental_explanation_prompt(
         "Do not re-read or re-explain unchanged code. Update conclusions only where the diff changes behavior, responsibility, control flow, risk, or improvement suggestions.",
         "Return a complete updated explanation, not a patch note, using the same section structure as the prior explanation.",
         "If the diff does not affect a section, keep that section concise and preserve the prior conclusion.",
+        _code_evidence_instruction(natural_language),
         "",
         f"Return exactly these sections in {spec['name']}:",
         *(spec["directory_sections"] if kind == "directory" else spec["file_sections"]),

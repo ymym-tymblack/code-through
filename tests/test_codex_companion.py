@@ -60,6 +60,7 @@ def test_build_incremental_explanation_prompt_uses_previous_output_and_diff_only
     assert "Old explanation" in prompt
     assert "@@ -1 +1 @@" in prompt
     assert "Do not re-read or re-explain unchanged code" in prompt
+    assert "attach the relevant code" in prompt
     assert "## Overview" in prompt
 
 def test_collect_workspace_snapshot_skips_ignored_dirs(tmp_path):
@@ -190,6 +191,28 @@ def test_git_operation_marker_changed_detects_checkout_and_stash():
 
     assert _git_operation_marker_changed(previous, checkout) is True
     assert _git_operation_marker_changed(previous, stash) is True
+
+
+def test_build_analysis_prompt_requests_code_excerpts():
+    from hermes_cli.codex_companion import _build_analysis_prompt
+
+    prompt = _build_analysis_prompt(
+        {
+            "event_id": "evt",
+            "workspace_root": "/workspace",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "change_type": "modified",
+                    "diff_text": "@@ -1 +1 @@\n-old\n+new\n",
+                }
+            ],
+        },
+        natural_language="en",
+    )
+
+    assert "attach the relevant code" in prompt
+    assert "For diff reviews, prefer changed lines" in prompt
 
 
 def test_build_diff_text_uses_dev_null_for_created_and_deleted():
@@ -343,6 +366,7 @@ def test_build_file_explanation_prompt_defaults_to_english(tmp_path):
 
     assert "You are explaining source code to a developer in English." in prompt
     assert "Return exactly these sections in English:" in prompt
+    assert "attach the relevant code" in prompt
     assert "## Overview" in prompt
     assert "## Key Functions and Responsibilities" in prompt
     assert "## Control Flow" in prompt
@@ -360,6 +384,7 @@ def test_build_directory_explanation_prompt_supports_japanese(tmp_path):
 
     assert "You are explaining a source directory to a developer in Japanese." in prompt
     assert "Return exactly these sections in Japanese:" in prompt
+    assert "該当コードを短い fenced code block" in prompt
     assert "## 概要" in prompt
     assert "## 主要なファイルと責務" in prompt
     assert "## 処理フロー" in prompt
