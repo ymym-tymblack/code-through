@@ -103,6 +103,12 @@ class TestCLIQuickCommands:
         cli.process_command("/flow run")
         cli._handle_flow_command.assert_called_once_with("/flow run")
 
+    def test_diff_command_dispatches_to_handler(self):
+        cli = self._make_cli({})
+        cli._handle_diff_command = MagicMock()
+        cli.process_command("/diff left.py right.py")
+        cli._handle_diff_command.assert_called_once_with("/diff left.py right.py")
+
     def test_promote_command_dispatches_to_handler(self):
         cli = self._make_cli({})
         cli._handle_promote_command = MagicMock()
@@ -180,6 +186,28 @@ class TestCLIQuickCommands:
         assert sync_kwargs["target_path"] == "sample.py"
         assert sync_kwargs["kind"] == "file"
         assert sync_kwargs["symbol"] == "run"
+
+    def test_diff_command_runs_semantic_comparison(self, tmp_path):
+        from cli import HermesCLI
+
+        left = tmp_path / "left.py"
+        left.write_text("def run(x):\n    return x + 1\n", encoding="utf-8")
+        right = tmp_path / "right.py"
+        right.write_text("def run(value):\n    return value + 1\n", encoding="utf-8")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.workspace_root = tmp_path
+        cli._run_review_prompt = MagicMock()
+
+        cli._handle_diff_command("/diff left.py right.py")
+
+        cli._run_review_prompt.assert_called_once()
+        kwargs = cli._run_review_prompt.call_args.kwargs
+        assert kwargs["title"] == "Semantic Diff"
+        assert kwargs["subtitle"] == "left.py <> right.py"
+        assert kwargs["command_name"] == "diff"
+        assert kwargs["metadata"]["left_path"] == "left.py"
+        assert kwargs["metadata"]["right_path"] == "right.py"
 
 
     def test_promote_command_queues_followup_prompt(self):

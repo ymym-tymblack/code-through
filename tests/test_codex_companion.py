@@ -9,6 +9,7 @@ from hermes_cli.codex_companion import (
     PendingChange,
     build_diff_text,
     build_directory_explanation_prompt,
+    build_file_diff_prompt,
     build_file_explanation_prompt,
     build_incremental_explanation_prompt,
     collect_related_context,
@@ -393,6 +394,23 @@ def test_build_directory_explanation_prompt_supports_japanese(tmp_path):
     assert "## Overview" not in prompt
 
 
+def test_build_file_diff_prompt_requests_semantic_equivalence_judgment(tmp_path):
+    prompt = build_file_diff_prompt(
+        tmp_path,
+        left_path="left.py",
+        right_path="right.py",
+        left_content="def run(x):\n    return x + 1\n",
+        right_content="def run(value):\n    return value + 1\n",
+        natural_language="en",
+    )
+
+    assert "semantic diff" in prompt
+    assert "no meaningful behavioral difference" in prompt
+    assert "## Behavioral Equivalence" in prompt
+    assert "### left: left.py" in prompt
+    assert "### right: right.py" in prompt
+
+
 def test_extract_promotion_candidates_is_disabled():
     analysis = """## Risks
 - Watch for duplicate retries.
@@ -484,6 +502,25 @@ def test_store_command_output_writes_to_workspace_codet_output_when_configured(t
     assert output_path.exists()
     payload = store.load_latest_output(command="review", title="Diff Review")
     assert payload["content"]["text"] == "review body"
+
+
+def test_store_command_output_writes_diff_to_workspace_codet_output_when_configured(tmp_path, monkeypatch):
+    store = HermesStore(root=tmp_path / "store")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("CODET_OUTPUT_ROOT", str(workspace))
+
+    output_path = store.save_command_output(
+        command="diff",
+        title="Semantic Diff",
+        body="## Comparison Summary\nEquivalent",
+        workspace_root=str(workspace),
+        session_id="sess1",
+    )
+
+    assert output_path.parent == workspace / "codet-output" / "diff"
+    payload = store.load_latest_output(command="diff", title="Semantic Diff")
+    assert payload["content"]["text"] == "## Comparison Summary\nEquivalent"
 
 
 def test_store_migrates_legacy_codex_companion_directory(tmp_path):

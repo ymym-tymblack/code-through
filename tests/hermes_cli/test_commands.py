@@ -15,7 +15,7 @@ EXPECTED_COMMANDS = {
     "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
     "/verbose", "/reasoning", "/language", "/compress", "/title", "/usage", "/insights", "/paste",
     "/reload-mcp", "/rollback", "/background", "/review", "/explain", "/flow", "/commit",
-    "/promote", "/skin", "/voice", "/quit",
+    "/diff", "/promote", "/skin", "/voice", "/quit",
 }
 
 
@@ -232,6 +232,22 @@ class TestSlashCommandCompleter:
 
         assert [item.text for item in completions] == ["pkg/"]
         assert completions[0].display_meta_text == "Directory"
+
+    def test_diff_command_completes_both_file_arguments(self, tmp_path):
+        left = tmp_path / "src"
+        left.mkdir()
+        (left / "old.py").write_text("print('left')\n", encoding="utf-8")
+        right = tmp_path / "dst"
+        right.mkdir()
+        (right / "new.py").write_text("print('right')\n", encoding="utf-8")
+
+        completer = SlashCommandCompleter(workspace_root_provider=lambda: tmp_path)
+
+        first = _completions(completer, "/diff sr")
+        second = _completions(completer, "/diff src/old.py ds")
+
+        assert [item.text for item in first] == ["src/"]
+        assert [item.text for item in second] == ["dst/"]
 
     def test_command_without_registered_options_does_not_suggest_arguments(self):
         assert _completions(SlashCommandCompleter(), "/help ") == []

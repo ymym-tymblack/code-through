@@ -2999,7 +2999,7 @@ class HermesCLI:
 
         for token in tokens[1:]:
             lowered = token.lower().strip()
-            if lowered in {"last", "review", "explain", "flow"}:
+            if lowered in {"last", "review", "explain", "flow", "diff"}:
                 source_alias = lowered
             elif lowered in {"memory", "skill"}:
                 target = lowered
@@ -3007,7 +3007,7 @@ class HermesCLI:
                 try:
                     index = int(lowered)
                 except ValueError:
-                    _cprint("  Usage: /promote [last|review|explain|flow] [memory|skill] [index]")
+                    _cprint("  Usage: /promote [last|review|explain|flow|diff] [memory|skill] [index]")
                     return
 
         from hermes_cli.codex_companion import HermesStore
@@ -3015,7 +3015,7 @@ class HermesCLI:
         store = HermesStore()
         payload = None
         if source_alias == "last":
-            for command_name in ("review", "explain", "flow"):
+            for command_name in ("review", "explain", "flow", "diff"):
                 candidate = store.load_latest_output(command=command_name)
                 if not candidate:
                     continue
@@ -3296,6 +3296,62 @@ class HermesCLI:
             },
             "watch_target_path": target_path,
             "watch_kind": "file",
+        }, None
+
+    def _build_diff_request(
+        self,
+        left_path: str,
+        right_path: str,
+    ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        workspace_root = self.workspace_root
+        from hermes_cli.codex_companion import build_file_diff_prompt, _load_text_file
+
+        left = (workspace_root / left_path).resolve()
+        right = (workspace_root / right_path).resolve()
+        if not left.exists():
+            return None, f"Path not found: {left_path}"
+        if not right.exists():
+            return None, f"Path not found: {right_path}"
+        if not left.is_file():
+            return None, f"File not found: {left_path}"
+        if not right.is_file():
+            return None, f"File not found: {right_path}"
+
+        try:
+            rel_left = str(left.relative_to(workspace_root))
+        except ValueError:
+            rel_left = left_path
+        try:
+            rel_right = str(right.relative_to(workspace_root))
+        except ValueError:
+            rel_right = right_path
+
+        max_file_bytes = int((CLI_CONFIG.get("review", {}) or {}).get("max_file_bytes", 200_000))
+        left_content = _load_text_file(left, max_file_bytes=max_file_bytes)
+        if left_content is None:
+            return None, f"Could not read text content from: {left_path}"
+        right_content = _load_text_file(right, max_file_bytes=max_file_bytes)
+        if right_content is None:
+            return None, f"Could not read text content from: {right_path}"
+
+        natural_language = getattr(self, "review_natural_language", "en")
+        prompt = build_file_diff_prompt(
+            workspace_root,
+            left_path=rel_left,
+            right_path=rel_right,
+            left_content=left_content,
+            right_content=right_content,
+            natural_language=natural_language,
+        )
+        return {
+            "prompt": prompt,
+            "title": "Semantic Diff",
+            "subtitle": f"{rel_left} <> {rel_right}",
+            "command_name": "diff",
+            "metadata": {
+                "left_path": rel_left,
+                "right_path": rel_right,
+            },
         }, None
 
     def _ensure_analysis_sync_state(self) -> None:
@@ -3603,6 +3659,23 @@ class HermesCLI:
             kind=request["watch_kind"],
             symbol=symbol,
             explicit_path=explicit_path,
+        )
+
+    def _handle_diff_command(self, cmd: str) -> None:
+        parts = cmd.strip().split()
+        if len(parts) != 3:
+            _cprint("  Usage: /diff <left_path> <right_path>")
+            return
+        request, error = self._build_diff_request(parts[1].strip(), parts[2].strip())
+        if error:
+            _cprint(f"  (>_<) {error}")
+            return
+        self._run_review_prompt(
+            request["prompt"],
+            title=request["title"],
+            subtitle=request["subtitle"],
+            command_name=request["command_name"],
+            metadata=request["metadata"],
         )
 
     def _run_git_command(self, *args: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess[str]:
@@ -4146,6 +4219,8 @@ class HermesCLI:
             self._handle_explain_command(cmd_original)
         elif cmd_lower.startswith("/flow"):
             self._handle_flow_command(cmd_original)
+        elif cmd_lower.startswith("/diff"):
+            self._handle_diff_command(cmd_original)
         elif cmd_lower.startswith("/commit"):
             self._handle_commit_command(cmd_original)
         elif cmd_lower.startswith("/promote"):

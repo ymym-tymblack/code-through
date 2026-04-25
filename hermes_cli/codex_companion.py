@@ -94,6 +94,12 @@ _LANGUAGE_SPECS = {
             "## Control Flow",
             "## Improvement Opportunities",
         ],
+        "diff_sections": [
+            "## Comparison Summary",
+            "## Behavioral Equivalence",
+            "## Implementation Differences",
+            "## Risks and Edge Cases",
+        ],
         "review_sections": [
             "## Change Summary",
             "## Control Flow",
@@ -120,6 +126,12 @@ _LANGUAGE_SPECS = {
             "## 主要なファイルと責務",
             "## 処理フロー",
             "## 改善ポイント",
+        ],
+        "diff_sections": [
+            "## 比較サマリ",
+            "## 振る舞いの等価性",
+            "## 実装上の違い",
+            "## リスクと境界条件",
         ],
         "review_sections": [
             "## 変更説明",
@@ -330,6 +342,7 @@ def _candidate_title(command_name: str, target: str, summary: str) -> str:
         "review": "Diff review",
         "explain": "Explain",
         "flow": "Flow",
+        "diff": "Semantic diff",
     }.get(command_name, "Analysis")
     noun = "workflow" if target == "skill" else "note"
     words = re.sub(r"\s+", " ", summary).strip().split(" ")
@@ -879,7 +892,7 @@ class HermesStore:
 
     def _command_output_dir(self, command: str, workspace_root: str = "") -> Path:
         explicit_root = os.getenv("CODET_OUTPUT_ROOT", "").strip()
-        if explicit_root and command in {"review", "explain", "flow"}:
+        if explicit_root and command in {"review", "explain", "flow", "diff"}:
             path = Path(explicit_root).expanduser() / "codet-output" / command
             path.mkdir(parents=True, exist_ok=True)
             return path
@@ -999,7 +1012,7 @@ class HermesStore:
             if command:
                 search_dirs.insert(0, base / command)
             else:
-                search_dirs = [base / name for name in ("review", "explain", "flow")] + search_dirs
+                search_dirs = [base / name for name in ("review", "explain", "flow", "diff")] + search_dirs
         candidates = []
         for directory in search_dirs:
             if directory.exists():
@@ -1281,6 +1294,59 @@ def build_directory_explanation_prompt(
         content = item.get("content") or ""
         if content:
             lines.append(content)
+    return "\n".join(lines)
+
+
+def build_file_diff_prompt(
+    workspace_root: Path,
+    *,
+    left_path: str,
+    right_path: str,
+    left_content: str,
+    right_content: str,
+    natural_language: Optional[str] = None,
+) -> str:
+    spec = _language_spec(natural_language)
+    diff_text = "".join(
+        difflib.unified_diff(
+            left_content.splitlines(keepends=True),
+            right_content.splitlines(keepends=True),
+            fromfile=f"a/{left_path}",
+            tofile=f"b/{right_path}",
+            lineterm="\n",
+        )
+    )
+    diff_text = _truncate_text(diff_text, DEFAULT_MAX_DIFF_CHARS) if diff_text else "[no textual diff]"
+    left_excerpt = _truncate_text(left_content, 12_000)
+    right_excerpt = _truncate_text(right_content, 12_000)
+    lines = [
+        f"You are comparing two source files for a developer in {spec['name']}.",
+        "Treat this as a semantic diff, not a raw textual diff.",
+        "Report no meaningful behavioral difference when the implementations appear equivalent despite naming, formatting, or structural variation.",
+        "Only call out a behavior difference when the code strongly supports it.",
+        _code_evidence_instruction(natural_language),
+        "",
+        f"Return exactly these sections in {spec['name']}:",
+        *spec["diff_sections"],
+        "",
+        "Behavioral Equivalence requirements:",
+        "- State whether the two files appear behaviorally equivalent, partially equivalent, or meaningfully different.",
+        "- If they look equivalent, say so explicitly and explain what differences are only stylistic or structural.",
+        "- If equivalence is uncertain, say what missing context prevents a stronger conclusion.",
+        "",
+        f"Workspace: {workspace_root}",
+        f"Left file: {left_path}",
+        f"Right file: {right_path}",
+        "",
+        "Unified diff:",
+        diff_text,
+        "",
+        f"### left: {left_path}",
+        left_excerpt,
+        "",
+        f"### right: {right_path}",
+        right_excerpt,
+    ]
     return "\n".join(lines)
 
 
@@ -1794,6 +1860,7 @@ __all__ = [
     "build_arg_parser",
     "build_directory_explanation_prompt",
     "build_diff_text",
+    "build_file_diff_prompt",
     "build_file_explanation_prompt",
     "collect_directory_context",
     "collect_workspace_snapshot",

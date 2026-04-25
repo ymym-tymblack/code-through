@@ -31,8 +31,9 @@ COMMANDS_BY_CATEGORY = {
         "/review": "Manage automatic diff reviews (usage: /review [on|off|status|last|apply|promote|exclude ...])",
         "/explain": "Explain a file in natural language (usage: /explain <path>)",
         "/flow": "Explain a symbol or flow (usage: /flow <symbol> [path])",
+        "/diff": "Compare two files semantically (usage: /diff <left_path> <right_path>)",
         "/commit": "Generate a commit message for the current git diff (usage: /commit [extra guidance])",
-        "/promote": "Queue a memory/skill promotion from the latest analysis (usage: /promote [last|review|explain|flow] [memory|skill] [index])",
+        "/promote": "Queue a memory/skill promotion from the latest analysis (usage: /promote [last|review|explain|flow|diff] [memory|skill] [index])",
     },
     "Configuration": {
         "/config": "Show current configuration",
@@ -93,6 +94,7 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("review", "Use the latest diff review output"),
         ("explain", "Use the latest explain output"),
         ("flow", "Use the latest flow output"),
+        ("diff", "Use the latest semantic diff output"),
         ("memory", "Promote into persistent memory"),
         ("skill", "Promote into a reusable skill"),
     ),
@@ -261,6 +263,10 @@ class SlashCommandCompleter(Completer):
             return ()
 
         if command == "/flow" and arg_index == 1 and self._looks_like_path_prefix(current_arg):
+            workspace_root = self._workspace_root()
+            if workspace_root is not None:
+                return self._iter_path_completions(workspace_root, current_arg)
+        if command == "/diff" and arg_index in {0, 1} and self._looks_like_path_prefix(current_arg):
             workspace_root = self._workspace_root()
             if workspace_root is not None:
                 return self._iter_path_completions(workspace_root, current_arg)
